@@ -1,0 +1,70 @@
+# Synthetic timetable used by the tests. None of this is real.
+semester:
+  name: Example Semester
+  semester: Example Semester
+  group: Example Group
+  start_date: "2026-08-03"
+
+courses:
+  CS 101: Introduction to Computer Science
+  MATH: Calculus
+  PHYS: Physics
+
+classes:
+  - day: monday
+    start: "11:00"
+    end: "12:00"
+    code: "CS 101 (T)"
+    room: "Room A"
+    tutor: "Dr. Example"
+    from_week: 3
+
+  - day: monday
+    start: "15:00"
+    end: "17:00"
+    code: "ENG (L)"
+    room: "Room B"
+    tutor: "Mr. Sample"
+
+  - day: tuesday
+    start: "08:30"
+    end: "10:00"
+    code: "PHYS"
+    room: "Lab 1"
+    tutor: "Dr. Demo"
+
+  - day: tuesday
+    start: "10:00"
+    end: "11:00"
+    code: "MATH (L)"
+    room: "Room C"
+    tutor: "Prof. Test"
+
+  - day: tuesday
+    start: "13:30"
+    end: "15:00"
+    code: "MATH (P)"
+    room: "Lab 2"
+    tutor: "Dr. Demo"
+    from_week: 2
+
+  - day: wednesday
+    start: "10:00"
+    end: "11:00"
+    code: "MATH (L)"
+    room: "Room C"
+    tutor: "Prof. Test"
+
+  - day: thursday
+    start: "08:30"
+    end: "10:00"
+    code: "PHYS"
+    room: "Lab 1"
+    tutor: "Dr. Demo"
+
+  - day: friday
+    start: "10:00"
+    end: "12:00"
+    code: "CS 101 (L)"
+    room: "Room A"
+    tutor: "Dr. Example"

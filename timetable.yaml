@@ -1,0 +1,30 @@
+# Your class timetable. Nora reads this on every message.
+#
+# Leave classes empty (or set timetable.enabled: false in config.yaml) if you
+# do not want her to know your schedule.
+#
+# - times are 24h "HH:MM", local time
+# - days: monday ... sunday
+# - "from_week" is optional: the class only starts in that teaching week
+#   (requires semester.start_date below)
+#
+# Example entry:
+#
+#   classes:
+#     - day: monday
+#       start: "09:00"
+#       end: "10:30"
+#       code: "CS101"
+#       room: "Room 4.12"
+#       tutor: "Dr. Example"
+
+semester:
+  name:
+  semester:
+  group:
+  # Monday of teaching week 1, e.g. "2026-08-03". Empty disables week numbers.
+  start_date:
+
+courses: {}
+
+classes: []

@@ -1,0 +1,31 @@
+# Synthetic academic calendar used by the tests. None of this is real.
+semester:
+  name: Example Semester
+
+events:
+  - kind: study
+    start: 2026-10-25
+    end: 2026-11-08
+    label: study week
+
+  - kind: exam
+    start: 2026-11-09
+    end: 2026-11-14
+    label: final exam week
+
+  - kind: break
+    start: 2026-11-15
+    end: 2026-11-29
+    label: semester break
+
+  - kind: holiday
+    date: 2026-11-08
+    label: example holiday
+
+  - kind: holiday
+    date: 2026-08-31
+    label: example holiday
+
+  - kind: holiday
+    date: 2026-12-25
+    label: winter holiday

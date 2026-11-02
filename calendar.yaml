@@ -1,0 +1,28 @@
+# Semester breaks, study weeks, exam weeks and public holidays.
+#
+# Leave events empty (or set calendar.enabled: false in config.yaml) if you do
+# not want her to know your academic calendar.
+#
+# kinds: holiday | break | study | exam | teaching
+#   holiday = public holiday, no classes that day
+#   break   = semester break, no classes
+#   study   = study week, no classes, exams coming
+#   exam    = final examination week
+#
+# dates are YYYY-MM-DD. "end" is inclusive. One-day entries can use "date".
+#
+# Example:
+#
+#   events:
+#     - kind: study
+#       start: 2026-10-25
+#       end: 2026-11-08
+#       label: study week
+#     - kind: holiday
+#       date: 2026-12-25
+#       label: christmas day
+
+semester:
+  name:
+
+events: []

@@ -1,0 +1,160 @@
+# Nora - a local, self-hosted girlfriend chatbot
+# Everything here is read on startup only, restart her after editing.
+
+persona:
+  name: Nora
+  # How your persona refers to you in the system prompt.
+  owner_name: him
+  # Discord id of the person whose timetable and calendar these are. Only
+  # their conversations get the schedule context. Empty = use proactive.user_id.
+  owner_id:
+  prompt_file: nora/prompts/girlfriend.txt
+
+model:
+  # Leave empty to auto-pick the first *.gguf in gguf_dir.
+  path:
+  gguf_dir: models
+  # Vision projector so she can see images. Empty = first mmproj*.gguf in
+  # gguf_dir. Get one with: python scripts\fetch_model.py --mmproj
+  mmproj:
+  context: 8192
+  threads: 8
+  # 99 = offload everything. Lower it if you run out of VRAM.
+  gpu_layers: 99
+  flash_attn: true
+  temperature: 0.9
+  top_p: 0.95
+  top_k: 64
+  repeat_penalty: 1.08
+  # Hard ceiling per reply. Short is the whole point.
+  max_tokens: 220
+  # Gemma-style models: keep reasoning off, we want texting not essays.
+  enable_thinking: false
+  extra_args: []
+
+server:
+  host: 127.0.0.1
+  port: 8081
+  binary: vendor/llama/llama-server.exe
+  # Set to false if you already run llama-server yourself.
+  manage: true
+  startup_timeout: 300
+  log_file: data/llama-server.log
+
+chat:
+  # How many past messages to feed back in (rough cap, trimmed to token budget).
+  history_messages: 24
+  history_token_budget: 2200
+  # Humanlike delivery.
+  max_chunks: 3
+  # Soft target length per text. Sentences are never cut in half to hit it;
+  # extra lines get merged into whole-sentence texts instead.
+  chunk_chars: 190
+  typing_cps: 11.0
+  min_delay: 0.6
+  max_delay: 8.0
+  # Wait this long after your last message before answering, so split
+  # messages ("hey" / "you around") arrive as one thought and you have time
+  # to send a second text.
+  debounce: 2.0
+
+  # A short pause so she is not a literal webhook, but she is still quick.
+  reply_delay:
+    enabled: true
+    buckets:
+      - { chance: 0.45, min: 0.5, max: 2 }  # quick
+      - { chance: 0.35, min: 2, max: 5 }    # normal
+      - { chance: 0.15, min: 5, max: 12 }   # thinking
+      - { chance: 0.05, min: 12, max: 30 }  # distracted
+    # whatever she picks, she never leaves you waiting longer than this from
+    # your first message of the burst
+    max_wait: 30
+
+memory:
+  # Every person gets their own sqlite file in here. Nothing is shared.
+  dir: data/people
+  # fallback for non-person scopes (the terminal client)
+  db_path: data/nora.db
+  facts_limit: 40
+  summaries_in_context: 3
+  recall_hits: 4
+  # Consolidate (summarize + extract facts) once this many messages pile up.
+  summarize_after: 40
+  summarize_batch: 30
+
+discord:
+  # Channel IDs where she replies to every message (not just mentions).
+  channels: []
+  respond_to_mentions: true
+  respond_to_dms: true
+  # Only these user ids may talk to her. Empty = anyone.
+  allow_users: []
+  # Record messages in allowlisted channels/DMs even when she isn't addressed,
+  # so she can bring them up later.
+  listen_all: true
+
+# How she shows up in the member list.
+presence:
+  enabled: true
+  # her custom status while she is up
+  online_activity: "on my phone"
+  online_emoji: "📱"
+  # hours she is asleep (24h, wrap allowed). she still answers, she just
+  # shows idle while she is meant to be sleeping
+  sleep_hours: [1, 8]
+  idle_activity: "sleeping"
+  idle_emoji: "💤"
+  # optional dnd windows, for example [[9, 12], [14, 17]]
+  busy_hours: []
+  busy_activity: "busy"
+  busy_emoji: "🎧"
+  # how often the status is re-checked
+  refresh_minutes: 5
+
+# She texts you first sometimes. This is a DM, not a channel.
+proactive:
+  enabled: true
+  # Your discord user id. Point this at yourself.
+  user_id:
+  # Time after startup before she considers texting you first.
+  first_delay_minutes: 20
+  # Random gap between spontaneous texts.
+  min_gap_minutes: 150
+  max_gap_minutes: 420
+  # Only if you have been quiet this long (she doesn't interrupt you).
+  idle_minutes: 45
+  # No texts in this local time window, [start_hour, end_hour).
+  quiet_hours: [0, 8]
+  max_per_day: 4
+  # Stop after this many of her texts in a row with no reply from you.
+  max_unanswered: 3
+  # Chance of actually sending when the timer fires. Keeps her unpredictable.
+  chance: 0.75
+
+  # If you vanish in the middle of a conversation, she checks on you, then
+  # worries if you stay quiet.
+  followup:
+    enabled: true
+    after_minutes: 20
+    max_minutes: 240
+    max_followups: 2
+
+tray:
+  # Notification-area icon: toggle texting-first, pick how often, text me now.
+  # Set to false if you run her on a machine with no desktop session.
+  enabled: true
+
+# Your class schedule. Fill in timetable.yaml, then set this to true.
+timetable:
+  enabled: false
+  file: timetable.yaml
+
+# Semester breaks, study weeks, exam weeks and public holidays.
+# Fill in calendar.yaml, then set this to true.
+calendar:
+  enabled: false
+  file: calendar.yaml
+
+log:
+  level: INFO
+  file: data/nora.log
