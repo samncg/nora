@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="442" viewBox="0 0 760 442" role="img" aria-label="An everyday conversation with Nora">
+<defs>
+<linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#1a1b1e"/><stop offset="1" stop-color="#232529"/></linearGradient>
+<linearGradient id="av" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#7c8cff"/><stop offset="1" stop-color="#c084fc"/></linearGradient>
+</defs>
+<rect width="760" height="442" rx="18" fill="url(#bg)"/>
+<rect x="0.5" y="0.5" width="759" height="441" rx="17.5" fill="none" stroke="#3a3c42"/>
+<circle cx="46" cy="38" r="18" fill="url(#av)"/>
+<text x="46" y="45" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="20" font-weight="700" fill="#0f1020" text-anchor="middle">n</text>
+<text x="74" y="33" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="17" font-weight="700" fill="#f2f3f5" text-anchor="start">nora</text>
+<circle cx="80" cy="47" r="4" fill="#23a55a"/>
+<text x="90" y="51" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#a3a6ad" text-anchor="start">online</text>
+<text x="732" y="44" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#8b8e96" text-anchor="end">direct message</text>
+<line x1="0" y1="68" x2="760" y2="68" stroke="#34363c"/>
+<rect x="583" y="96" width="149" height="37" rx="16" fill="#5865f2"/>
+<text x="599" y="117" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="15" font-weight="400" fill="#ffffff" text-anchor="start">hey you around</text>
+<circle cx="32" cy="160" r="15" fill="url(#av)"/>
+<text x="32" y="165" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="16" font-weight="700" fill="#0f1020" text-anchor="middle">n</text>
+<rect x="56" y="142" width="104" height="37" rx="16" fill="#2b2d31"/>
+<text x="72" y="163" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="15" font-weight="400" fill="#dbdee1" text-anchor="start">yeah</text>
+<rect x="56" y="188" width="104" height="37" rx="16" fill="#2b2d31"/>
+<text x="72" y="209" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="15" font-weight="400" fill="#dbdee1" text-anchor="start">whats up</text>
+<rect x="435" y="234" width="297" height="37" rx="16" fill="#5865f2"/>
+<text x="451" y="255" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="15" font-weight="400" fill="#ffffff" text-anchor="start">first week at the new job is done</text>
+<circle cx="32" cy="298" r="15" fill="url(#av)"/>
+<text x="32" y="303" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="16" font-weight="700" fill="#0f1020" text-anchor="middle">n</text>
+<rect x="56" y="280" width="203" height="37" rx="16" fill="#2b2d31"/>
+<text x="72" y="301" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="15" font-weight="400" fill="#dbdee1" text-anchor="start">oh nice, you survived</text>
+<rect x="56" y="326" width="453" height="37" rx="16" fill="#2b2d31"/>
+<text x="72" y="347" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="15" font-weight="400" fill="#dbdee1" text-anchor="start">are they still decent or was that just day one energy</text>
+<rect x="56" y="372" width="168" height="36" rx="18" fill="#2b2d31"/>
+<circle cx="72" cy="390" r="3" fill="#9aa0aa"/>
+<circle cx="84" cy="390" r="3" fill="#9aa0aa"/>
+<circle cx="96" cy="390" r="3" fill="#9aa0aa"/>
+<text x="112" y="395" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13" font-weight="400" fill="#9aa0aa" text-anchor="start">nora is typing</text>
+</svg>

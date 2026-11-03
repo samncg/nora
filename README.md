@@ -1,5 +1,13 @@
 # Nora
 
+[![Python](https://img.shields.io/badge/python-3.10%2B-3776ab?logo=python&logoColor=white)](https://www.python.org/)
+[![Platform](https://img.shields.io/badge/platform-windows-0078d4?logo=windows&logoColor=white)](#requirements)
+[![Inference](https://img.shields.io/badge/inference-100%25%20local-2ea44f)](#memory-and-privacy)
+
+<p align="center">
+  <img src="docs/banner.svg" alt="Nora — a local AI girlfriend who texts you on Discord" width="900">
+</p>
+
 A local, self-hosted AI girlfriend who texts you on Discord.
 
 She runs a 4-bit **Gemma E4B** GGUF in [llama.cpp](https://github.com/ggml-org/llama.cpp) on your own machine, texts in short lowercase bursts like a real person, remembers what you tell her, and can start conversations on her own. Everything stays on your PC except the Discord messages themselves.
@@ -12,6 +20,32 @@ you:  first week at the new job is done
 nora: oh nice, you survived
 nora: are they still decent or was that just day one energy
 ```
+
+## What it looks like
+
+<p align="center">
+  <img src="docs/chat-everyday.svg" alt="An everyday conversation with Nora in short lowercase bursts" width="700">
+</p>
+
+Short bubbles, lowercase, no full stops. She splits a thought across messages the way people actually text, and sometimes starts typing before she knows what to say.
+
+<p align="center">
+  <img src="docs/chat-memory.svg" alt="Nora bringing up an exam from three days earlier" width="700">
+</p>
+
+Each person gets one transcript, older parts are summarized, and details come back when they matter — like asking how an exam went three days later.
+
+<p align="center">
+  <img src="docs/chat-voice.svg" alt="Nora replying to a voice message transcribed locally" width="700">
+</p>
+
+Voice notes are transcribed on your machine with Whisper, then treated like any other message.
+
+<p align="center">
+  <img src="docs/chat-details.svg" alt="Nora reacting with a heart to a goodbye" width="700">
+</p>
+
+Small things: she reacts when the tone is clear, always hearts a goodbye, and never replies just because you reacted to her.
 
 ## Features
 
@@ -195,8 +229,6 @@ Everything lives in `config.yaml` and is read at startup. Restart her after edit
 | `tray.enabled` | notification-area icon on or off |
 | `log.level` / `file` | logging configuration |
 
-To find a Discord id, enable **Settings → Advanced → Developer Mode**, then right-click a user or channel and choose **Copy ID**.
-
 ## Memory and privacy
 
 Nora is deliberately boring about where your data goes:
@@ -249,6 +281,49 @@ Use `discord.allow_users` to restrict who can talk to her at all. Empty means an
 - **Moods** — each person gets a slow-moving mood (warm, playful, tired, quiet, soft) that tints her tone and typing pace. A genuinely sad message can pull her into soft mode immediately; otherwise a mood lasts a few hours.
 - **Waking up** — her first reply in the morning is slower, then she is back to normal speed.
 
+## Examples
+
+**She texts first** — when `proactive.user_id` is set and you have been quiet long enough.
+
+```
+nora: hey
+nora: random question
+nora: did you ever finish that thing you were working on
+```
+
+**She keeps the thread alive** — if you disappear mid-conversation.
+
+```
+nora: you there?
+nora: ok going quiet now
+nora: text me when you see this
+```
+
+**She reads the room** — a sad message pulls her into a softer mood and a slower pace.
+
+```
+you:  today was rough
+nora: yeah?
+nora: do you want to talk about it or do you want a distraction
+```
+
+**She does not invent a shared past** — if she does not know, she asks instead of pretending.
+
+```
+you:  what should we do this weekend
+nora: no idea yet
+nora: what are you in the mood for
+```
+
+**A goodbye always gets a heart** — the reaction is the reply.
+
+```
+you:  ok goodnight
+nora: night
+nora: sleep well
+[ nora reacted ❤️ to your message ]
+```
+
 ## Persona
 
 `nora/prompts/girlfriend.txt` is the whole character. Delivery rules (bubble size, lowercase, no full stops, no emoji, no markdown) are enforced separately in code, so you can adjust the voice without rewriting the plumbing.
@@ -295,12 +370,14 @@ Fill them in, then set `timetable.enabled: true` and/or `calendar.enabled: true`
 | `nora/proactive.py` | pure scheduling decisions for spontaneous texts |
 | `nora/pacing.py` | reply-delay buckets |
 | `nora/presence.py` | online / idle / busy status |
+| `nora/mood.py` | slow-moving moods and sentiment nudges |
 | `nora/timetable.py`, `nora/academic.py` | schedule and calendar parsing |
 | `nora/vision.py` | image downscaling and re-encoding |
 | `nora/asr.py` | local Whisper transcription for voice messages |
 | `nora/tts.py` | Kokoro-82M (`af_bella`) voice synthesis and Ogg/Opus encoding |
 | `nora/supervisor.py` | detached keepalive, pid file, stale server cleanup |
 | `nora/tray.py`, `nora/runtime.py` | Windows tray icon and runtime overrides |
+| `docs/` | README art and chat mockups |
 | `scripts/` | setup, download, run, stop, status, wipe, autostart |
 | `tests/` | unit tests and synthetic fixtures |
 

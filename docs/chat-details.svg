@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="356" viewBox="0 0 760 356" role="img" aria-label="Nora reacting with a heart to a goodbye">
+<defs>
+<linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#1a1b1e"/><stop offset="1" stop-color="#232529"/></linearGradient>
+<linearGradient id="av" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#7c8cff"/><stop offset="1" stop-color="#c084fc"/></linearGradient>
+</defs>
+<rect width="760" height="356" rx="18" fill="url(#bg)"/>
+<rect x="0.5" y="0.5" width="759" height="355" rx="17.5" fill="none" stroke="#3a3c42"/>
+<circle cx="46" cy="38" r="18" fill="url(#av)"/>
+<text x="46" y="45" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="20" font-weight="700" fill="#0f1020" text-anchor="middle">n</text>
+<text x="74" y="33" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="17" font-weight="700" fill="#f2f3f5" text-anchor="start">nora</text>
+<circle cx="80" cy="47" r="4" fill="#23a55a"/>
+<text x="90" y="51" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#a3a6ad" text-anchor="start">online</text>
+<text x="732" y="44" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#8b8e96" text-anchor="end">direct message</text>
+<line x1="0" y1="68" x2="760" y2="68" stroke="#34363c"/>
+<rect x="536" y="96" width="196" height="37" rx="16" fill="#5865f2"/>
+<text x="552" y="117" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="15" font-weight="400" fill="#ffffff" text-anchor="start">ok im heading to bed</text>
+<rect x="656" y="128" width="62" height="26" rx="9" fill="#3b3d44" stroke="#5865f2" stroke-width="1"/>
+<text x="666" y="146" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13" font-weight="400" fill="#e6e8ec" text-anchor="start">❤️ 1</text>
+<circle cx="32" cy="185" r="15" fill="url(#av)"/>
+<text x="32" y="190" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="16" font-weight="700" fill="#0f1020" text-anchor="middle">n</text>
+<rect x="56" y="167" width="104" height="37" rx="16" fill="#2b2d31"/>
+<text x="72" y="188" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="15" font-weight="400" fill="#dbdee1" text-anchor="start">night</text>
+<rect x="56" y="213" width="118" height="37" rx="16" fill="#2b2d31"/>
+<text x="72" y="234" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="15" font-weight="400" fill="#dbdee1" text-anchor="start">sleep well</text>
+<rect x="622" y="259" width="110" height="37" rx="16" fill="#5865f2"/>
+<text x="638" y="280" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="15" font-weight="400" fill="#ffffff" text-anchor="start">goodnight</text>
+<rect x="656" y="291" width="62" height="26" rx="9" fill="#3b3d44" stroke="#5865f2" stroke-width="1"/>
+<text x="666" y="309" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13" font-weight="400" fill="#e6e8ec" text-anchor="start">❤️ 1</text>
+</svg>
