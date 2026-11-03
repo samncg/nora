@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import io
+import json
 import logging
 import random
 import re
@@ -12,16 +15,19 @@ from pathlib import Path
 from typing import Any
 
 import discord
+import httpx
 from discord import app_commands
 from discord.ext import commands
 
 from . import pacing
 from . import presence
 from . import proactive as proactive_mod
+from .asr import Transcriber
 from .brain import PHOTO_MARKER, Nora
 from .config import ProactiveConfig, Settings
 from .humanize import typing_seconds
 from .runtime import RuntimeControls
+from .tts import Speech, Speaker, pcm_48k_stereo
 from .vision import MAX_BYTES as MAX_IMAGE_BYTES
 from .vision import MAX_IMAGES
 
@@ -30,9 +36,101 @@ log = logging.getLogger("nora.discord")
 _MENTION_RE = re.compile(r"<@[!&]?\d+>")
 _SPACE_RE = re.compile(r"[ \t]{2,}")
 
-Pending = list[tuple[str, int | None, str | None, list[bytes]]]
+Pending = list[tuple[str, int | None, str | None, list[bytes], bool]]
 
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}
+AUDIO_SUFFIXES = {".ogg", ".opus", ".mp3", ".m4a", ".wav", ".webm", ".flac", ".aac"}
+
+# Each emoji only fires for a matching tone. Order matters: the first cue that
+# matches decides the reaction, and no cue means she does not react at all.
+REACTION_CUES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        "❤️",
+        (
+            "love you",
+            "miss you",
+            "ily",
+            "thinking of you",
+            "thinking about you",
+            "cuddle",
+            "kiss",
+            "sweet",
+            "you're the best",
+            "youre the best",
+        ),
+    ),
+    (
+        "🔥",
+        (
+            "got the job",
+            "passed",
+            "won",
+            "let's go",
+            "lets go",
+            "great news",
+            "good news",
+            "proud of",
+            "did it",
+        ),
+    ),
+    (
+        "😭",
+        (
+            "sad",
+            "crying",
+            "cry",
+            "tired",
+            "exhausted",
+            "stressed",
+            "bad day",
+            "rough day",
+            "lonely",
+            "awful",
+            "overwhelmed",
+        ),
+    ),
+    (
+        "💀",
+        (
+            "lol",
+            "lmao",
+            "dead",
+            "bruh",
+            "no way",
+            "crazy",
+            "insane",
+            "wtf",
+        ),
+    ),
+)
+
+# Saying bye always gets a heart: no dice roll, no cooldown.
+FAREWELL_CUES = (
+    "goodbye",
+    "good bye",
+    "bye",
+    "ttyl",
+    "talk later",
+    "talk to you later",
+    "see you",
+    "see ya",
+    "goodnight",
+    "good night",
+    "night night",
+    "cya",
+    "gotta go",
+    "got to go",
+    "gtg",
+    "heading out",
+    "signing off",
+)
+
+
+def _cue_in(phrase: str, text: str) -> bool:
+    """Whole-word match for single words, plain substring for phrases."""
+    if " " in phrase:
+        return phrase in text
+    return re.search(rf"\b{re.escape(phrase)}\b", text) is not None
 
 
 class NoraBot(commands.Bot):
@@ -43,10 +141,13 @@ class NoraBot(commands.Bot):
         # Privileged intent: enable it in the Developer Portal too.
         intents.message_content = True
         intents.dm_messages = True
+        intents.reactions = True
         super().__init__(command_prefix="!", intents=intents, help_command=None)
 
         self.settings = settings
         self.nora = nora
+        self.transcriber = Transcriber(settings)
+        self.speaker = Speaker(settings)
         self.started_at = time.time()
         self.controls = RuntimeControls(settings)
         self._pending: dict[int, Pending] = {}
@@ -54,6 +155,7 @@ class NoraBot(commands.Bot):
         self._timer_tasks: dict[int, asyncio.Task[None]] = {}
         self._versions: dict[int, int] = {}
         self._locks: dict[int, asyncio.Lock] = {}
+        self._voice_locks: dict[int, asyncio.Lock] = {}
         self._proactive_task: asyncio.Task[None] | None = None
         self._presence_task: asyncio.Task[None] | None = None
         self._presence_key: tuple[str, str] | None = None
@@ -67,6 +169,18 @@ class NoraBot(commands.Bot):
         self._followups: dict[str, int] = {}
         self._followup_at: dict[str, datetime] = {}
         self._tray: Any = None
+        self._voice_client: Any = None
+        self._voice_channel_id: int | None = None
+        self._voice_speak_lock: asyncio.Lock | None = None
+        self._last_reaction: dict[str, datetime] = {}
+        self._reaction_tasks: set[asyncio.Task[None]] = set()
+        self._wake_delay_used: dict[str, date] = {}
+        # discord.py bundles libopus on Windows but does not load it until asked.
+        if not discord.opus.is_loaded():
+            try:
+                discord.opus._load_default()
+            except Exception:
+                log.warning("could not load libopus", exc_info=True)
 
     # -- lifecycle -------------------------------------------------------
     async def setup_hook(self) -> None:
@@ -98,6 +212,21 @@ class NoraBot(commands.Bot):
                 callback=self._cmd_status,
             )
         )
+        if self.settings.tts.enabled and self.settings.tts.voice_channel:
+            self.tree.add_command(
+                app_commands.Command(
+                    name="call",
+                    description="bring her into your voice channel",
+                    callback=self._cmd_call,
+                )
+            )
+            self.tree.add_command(
+                app_commands.Command(
+                    name="leave",
+                    description="make her leave the voice channel",
+                    callback=self._cmd_leave,
+                )
+            )
         try:
             synced = await self.tree.sync()
             log.info("synced %d slash commands", len(synced))
@@ -134,6 +263,8 @@ class NoraBot(commands.Bot):
             self._proactive_task.cancel()
         for task in list(self._timer_tasks.values()):
             task.cancel()
+        for task in list(self._reaction_tasks):
+            task.cancel()
         await self.nora.close()
         await super().close()
 
@@ -146,10 +277,7 @@ class NoraBot(commands.Bot):
 
         text = self._clean(message)
         images = await self._images(message)
-        if not text and not images:
-            text = self._attachment_note(message)
-        if not text and not images:
-            return
+        audio = await self._voice_notes(message)
 
         addressed = self._is_addressed(message)
         in_channel = self._in_allowlist(message.channel)
@@ -164,8 +292,50 @@ class NoraBot(commands.Bot):
             log.debug("ignoring %s (not on allow_users)", message.author.id)
             return
 
+        if audio:
+            voice_lock = self._voice_locks.setdefault(
+                message.channel.id, asyncio.Lock()
+            )
+            async with voice_lock:
+                transcript = await self._transcribe(message, audio)
+            if transcript:
+                text = f"{text}\n{transcript}".strip() if text else transcript
+            elif not text:
+                # Silent or unreadable clip: say so instead of guessing what he said.
+                self.nora.store_for(scope).add_message(
+                    scope,
+                    "user",
+                    "[sent a voice message]",
+                    author_id=message.author.id,
+                    author_name=message.author.display_name,
+                )
+                if addressed or (in_channel and self.settings.discord.listen_all):
+                    fallback = "i couldnt hear that, say it again?"
+                    try:
+                        await self._send_chunk(message.channel, fallback)
+                        self.nora.record_reply(scope, [fallback])
+                    except Exception:
+                        log.warning(
+                            "could not send the voice fallback", exc_info=True
+                        )
+                return
+
+        if not text and not images:
+            text = self._attachment_note(message)
+        if not text and not images:
+            return
+
+        voice_reply = (
+            bool(audio)
+            and self.settings.tts.enabled
+            and self.settings.tts.reply_to_voice
+        )
+        if self._call_channel(message.channel) is not None:
+            voice_reply = True
+
         if addressed or (in_channel and self.settings.discord.listen_all):
-            self._queue(message, text, images)
+            self._schedule_reaction(message, scope, text)
+            self._queue(message, text, images, voice_reply)
             return
 
         # Passive listening: keep it in memory, stay quiet.
@@ -212,6 +382,321 @@ class NoraBot(commands.Bot):
                 log.warning("could not download an attachment", exc_info=True)
         return blobs
 
+    async def _voice_notes(self, message: discord.Message) -> list[bytes]:
+        cfg = self.settings.voice
+        if not cfg.enabled:
+            return []
+        clips: list[bytes] = []
+        for attachment in message.attachments:
+            if len(clips) >= cfg.max_clips:
+                break
+            if not self._is_voice_attachment(attachment):
+                continue
+            if attachment.size and attachment.size > cfg.max_bytes:
+                log.info("skipping oversized voice message %s", attachment.filename)
+                continue
+            try:
+                clips.append(await attachment.read())
+            except Exception:
+                log.warning("could not download a voice message", exc_info=True)
+        return clips
+
+    @staticmethod
+    def _is_voice_attachment(attachment: Any) -> bool:
+        try:
+            if attachment.is_voice_message():
+                return True
+        except Exception:
+            pass
+        content_type = (attachment.content_type or "").lower()
+        suffix = Path(attachment.filename or "").suffix.lower()
+        return content_type.startswith("audio/") or suffix in AUDIO_SUFFIXES
+
+    async def _transcribe(
+        self, message: discord.Message, clips: list[bytes]
+    ) -> str:
+        typing = getattr(message.channel, "typing", None)
+        try:
+            if typing is not None:
+                async with typing():
+                    return await asyncio.to_thread(
+                        self.transcriber.transcribe_many, clips
+                    )
+            return await asyncio.to_thread(self.transcriber.transcribe_many, clips)
+        except Exception:
+            log.exception("voice transcription failed")
+            return ""
+
+    # -- reactions -------------------------------------------------------
+    def _schedule_reaction(self, message: Any, scope: str, text: str) -> None:
+        """React a little later, like she read it instead of firing instantly."""
+        cfg = self.settings.reactions
+        if not cfg.enabled:
+            return
+        if not self._is_farewell(text) and self._pick_reaction(text) is None:
+            return
+        low = max(0.0, float(cfg.delay_min))
+        high = max(low, float(cfg.delay_max))
+        delay = random.uniform(low, high)
+        task = asyncio.create_task(self._react_later(message, scope, text, delay))
+        self._reaction_tasks.add(task)
+        task.add_done_callback(self._reaction_tasks.discard)
+
+    async def _react_later(
+        self, message: Any, scope: str, text: str, delay: float
+    ) -> None:
+        try:
+            await asyncio.sleep(delay)
+            await self._maybe_react(message, scope, text)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.warning("could not react to a message", exc_info=True)
+
+    async def _maybe_react(self, message: Any, scope: str, text: str) -> None:
+        cfg = self.settings.reactions
+        if not cfg.enabled:
+            return
+        if self._is_farewell(text):
+            # she always hearts a goodbye, even if it is minutes after the last one
+            try:
+                await message.add_reaction("❤️")
+            except Exception:
+                log.warning("could not react to a message", exc_info=True)
+            return
+        emoji = self._pick_reaction(text)
+        if emoji is None:
+            return
+        chance = max(0.0, min(1.0, float(cfg.chance)))
+        if chance <= 0 or random.random() >= chance:
+            return
+        now = datetime.now()
+        last = self._last_reaction.get(scope)
+        if last is not None and (now - last) < timedelta(
+            minutes=max(0.0, float(cfg.cooldown_minutes))
+        ):
+            return
+        try:
+            await message.add_reaction(emoji)
+        except Exception:
+            log.warning("could not react to a message", exc_info=True)
+            return
+        self._last_reaction[scope] = now
+
+    @staticmethod
+    def _is_farewell(text: str) -> bool:
+        lowered = " ".join((text or "").lower().split())
+        return any(_cue_in(phrase, lowered) for phrase in FAREWELL_CUES)
+
+    @staticmethod
+    def _pick_reaction(text: str) -> str | None:
+        """Return an emoji only when the message clearly carries that tone.
+
+        None means there is no obvious cue, so she leaves it alone instead of
+        picking something at random.
+        """
+        lowered = " ".join((text or "").lower().split())
+        if not lowered:
+            return None
+        for emoji, phrases in REACTION_CUES:
+            if any(_cue_in(phrase, lowered) for phrase in phrases):
+                return emoji
+        return None
+
+    @staticmethod
+    def _reaction_note(emoji: str, content: str) -> str:
+        snippet = " ".join((content or "").split())[:120]
+        return f'[reacted {emoji} to your message: "{snippet}"]'
+
+    async def on_raw_reaction_add(
+        self, payload: discord.RawReactionActionEvent
+    ) -> None:
+        cfg = self.settings.reactions
+        if not cfg.enabled or not cfg.remember_user_reactions:
+            return
+        if self.user is not None and payload.user_id == self.user.id:
+            return
+        member = getattr(payload, "member", None)
+        if member is not None and getattr(member, "bot", False):
+            return
+        try:
+            channel = self.get_channel(payload.channel_id) or await self.fetch_channel(
+                payload.channel_id
+            )
+            message = await channel.fetch_message(payload.message_id)
+        except Exception:
+            log.debug("could not fetch a reacted message", exc_info=True)
+            return
+        if self.user is None or message.author.id != self.user.id:
+            return
+        scope = f"u:{payload.user_id}"
+        note = self._reaction_note(str(payload.emoji), message.content or "")
+        store = self.nora.store_for(scope)
+        if any(m["content"] == note for m in store.recent(scope, 3)):
+            return
+        name = getattr(member, "display_name", None)
+        store.add_message(
+            scope,
+            "user",
+            note,
+            author_id=payload.user_id,
+            author_name=name,
+        )
+        log.info("[%s] saw a %s reaction", scope, payload.emoji)
+
+    # -- voice output ----------------------------------------------------
+    def _call_channel(self, channel: Any) -> Any:
+        client = self._voice_client
+        if client is None or not getattr(client, "is_connected", lambda: False)():
+            return None
+        voice_channel = getattr(client, "channel", None)
+        if voice_channel is None:
+            return None
+        # Only the voice channel's own text chat turns typed messages into
+        # speech, so replies from unrelated channels are not played aloud.
+        if getattr(channel, "id", None) != getattr(voice_channel, "id", None):
+            return None
+        return voice_channel
+
+    async def _send_voice_clip(self, channel: Any, speech: Speech) -> None:
+        token = self.settings.discord.token
+        if not token:
+            raise RuntimeError("DISCORD_TOKEN is missing")
+        payload = {
+            "flags": discord.MessageFlags.voice.flag,
+            "attachments": [
+                {
+                    "id": "0",
+                    "filename": "voice-message.ogg",
+                    "duration_secs": round(float(speech.duration), 2),
+                    "waveform": base64.b64encode(speech.waveform).decode("ascii"),
+                }
+            ],
+        }
+        url = f"https://discord.com/api/v10/channels/{channel.id}/messages"
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                for _ in range(2):
+                    response = await client.post(
+                        url,
+                        headers={"Authorization": f"Bot {token}"},
+                        data={"payload_json": json.dumps(payload)},
+                        files={
+                            "files[0]": (
+                                "voice-message.ogg",
+                                speech.opus,
+                                "audio/ogg",
+                            )
+                        },
+                    )
+                    if response.status_code == 429:
+                        wait = float(response.json().get("retry_after", 1.0))
+                        await asyncio.sleep(min(wait, 5.0))
+                        continue
+                    if response.status_code >= 400:
+                        raise RuntimeError(
+                            "discord rejected the voice message: "
+                            f"{response.status_code} {response.text[:200]}"
+                        )
+                    return
+            raise RuntimeError("voice message rate limited")
+        except Exception:
+            log.warning(
+                "voice message upload failed, sending an audio file instead",
+                exc_info=True,
+            )
+            await channel.send(
+                file=discord.File(
+                    io.BytesIO(speech.opus), filename="nora-voice.ogg"
+                )
+            )
+
+    async def _speak_in_call(self, text: str) -> bool:
+        speech = await asyncio.to_thread(self.speaker.speak, text)
+        if speech is None:
+            return False
+        return await self._play_in_call(speech)
+
+    async def _play_in_call(self, speech: Speech) -> bool:
+        client = self._voice_client
+        if client is None or not getattr(client, "is_connected", lambda: False)():
+            return False
+        if self._voice_speak_lock is None:
+            self._voice_speak_lock = asyncio.Lock()
+        pcm = pcm_48k_stereo(speech.samples, speech.sample_rate)
+        async with self._voice_speak_lock:
+            while client.is_playing():
+                await asyncio.sleep(0.1)
+            client.play(discord.PCMAudio(io.BytesIO(pcm)))
+            while client.is_playing():
+                await asyncio.sleep(0.05)
+        return True
+
+    async def _join_voice(self, channel: Any) -> bool:
+        cfg = self.settings.tts
+        if not cfg.enabled or not cfg.voice_channel:
+            return False
+        was_here = (
+            self._voice_client is not None
+            and getattr(self._voice_client, "channel", None) == channel
+        )
+        try:
+            client = channel.guild.voice_client
+            if client is None:
+                client = await channel.connect()
+            elif getattr(client, "channel", None) != channel:
+                await client.move_to(channel)
+            self._voice_client = client
+            self._voice_channel_id = channel.id
+            if not was_here:
+                log.info("joined voice channel %s", channel.id)
+                if cfg.greeting:
+                    await self._speak_in_call(cfg.greeting)
+            return True
+        except Exception:
+            log.exception("could not join the voice channel")
+            return False
+
+    async def on_voice_state_update(
+        self, member: Any, before: Any, after: Any
+    ) -> None:
+        if self.user is None or getattr(member, "id", None) != self.user.id:
+            return
+        if after.channel is None:
+            self._voice_client = None
+            self._voice_channel_id = None
+            return
+        if after.channel != before.channel:
+            await self._join_voice(after.channel)
+
+    async def _cmd_call(self, interaction: discord.Interaction) -> None:
+        voice = getattr(interaction.user, "voice", None)
+        channel = getattr(voice, "channel", None)
+        if channel is None:
+            await interaction.response.send_message(
+                "join a voice channel first", ephemeral=True
+            )
+            return
+        if not self.settings.tts.enabled:
+            await interaction.response.send_message(
+                "voice replies are turned off", ephemeral=True
+            )
+            return
+        await interaction.response.defer(ephemeral=True)
+        joined = await self._join_voice(channel)
+        message = "ok im here" if joined else "i couldnt join, check my permissions"
+        await interaction.followup.send(message, ephemeral=True)
+
+    async def _cmd_leave(self, interaction: discord.Interaction) -> None:
+        client = self._voice_client
+        if client is None:
+            client = getattr(interaction.guild, "voice_client", None)
+        if client is not None:
+            await client.disconnect()
+        self._voice_client = None
+        self._voice_channel_id = None
+        await interaction.response.send_message("left the call", ephemeral=True)
+
     def _user_allowed(self, user_id: int) -> bool:
         allowed = self.settings.discord.allow_users
         return not allowed or user_id in allowed
@@ -245,14 +730,18 @@ class NoraBot(commands.Bot):
 
     # -- debounce + delivery --------------------------------------------
     def _queue(
-        self, message: discord.Message, text: str, images: list[bytes]
+        self,
+        message: discord.Message,
+        text: str,
+        images: list[bytes],
+        voice: bool = False,
     ) -> None:
         cid = message.channel.id
         if not self._pending.get(cid):
             # start of a burst: her think time is counted from here
             self._pending_since[cid] = time.monotonic()
         self._pending.setdefault(cid, []).append(
-            (text, message.author.id, message.author.display_name, images)
+            (text, message.author.id, message.author.display_name, images, voice)
         )
         # A version token lets a newer message supersede the pending timer
         # without cancelling a reply that is already being generated.
@@ -301,6 +790,20 @@ class NoraBot(commands.Bot):
         scope = f"u:{author_id}" if author_id is not None else f"dm:{cid}"
         text = "\n".join(e[0] for e in entries).strip()
         images = [blob for entry in entries for blob in entry[3]][:MAX_IMAGES]
+        voice_reply = any(entry[4] for entry in entries)
+
+        idle = self.nora.store_for(scope).user_idle_minutes(scope)
+        return_delay = self._return_delay(idle)
+        wake_delay = self._wake_delay(scope)
+        delay = max(return_delay, wake_delay)
+        if delay:
+            log.info(
+                "first reply delayed %.1fs (away %.1fh, wake delay %.1fs)",
+                delay,
+                (idle or 0.0) / 60.0,
+                wake_delay,
+            )
+            await asyncio.sleep(delay)
 
         adaptations = 0
         delivered: list[str] = []
@@ -329,25 +832,69 @@ class NoraBot(commands.Bot):
                 return
 
             # he said something new while she was still composing
+            pace = self.nora.mood_pace(scope)
             newer = self._take_pending_for(cid, author_id)
             if newer and adaptations < self.MAX_ADAPTATIONS:
                 adaptations += 1
-                text, images = self._merge_entries(newer, images)
+                text, images, voice_reply = self._merge_entries(
+                    newer, images, voice_reply
+                )
                 log.info("he kept typing, adjusting her reply (%s)", scope)
+                await self._rethink_pause()
                 continue
 
+            if voice_reply and chunks:
+                speech = await asyncio.to_thread(
+                    self.speaker.speak_chunks, chunks
+                )
+                if speech is not None:
+                    if self._versions.get(cid, 0) != version:
+                        newer = self._take_pending_for(cid, author_id)
+                        if newer and adaptations < self.MAX_ADAPTATIONS:
+                            adaptations += 1
+                            text, images, voice_reply = self._merge_entries(
+                                newer, images, voice_reply
+                            )
+                            await self._rethink_pause()
+                            continue
+                        break
+                    try:
+                        call = self._call_channel(channel)
+                        if call is not None:
+                            await self._play_in_call(speech)
+                        else:
+                            async with channel.typing():
+                                await self._send_voice_clip(channel, speech)
+                        delivered.extend(chunks)
+                        break
+                    except Exception:
+                        log.exception(
+                            "voice reply failed; falling back to text"
+                        )
+                else:
+                    log.warning("TTS produced no audio; sending text instead")
+
             interrupted = False
+            sent_bubbles = 0
             for chunk in chunks:
                 if self._versions.get(cid, 0) != version:
                     interrupted = True
                     break
-                delivered.append(chunk)
+                if sent_bubbles:
+                    gap = self._bubble_gap()
+                    if gap:
+                        await asyncio.sleep(gap)
+                await self._maybe_tease_typing(channel)
                 try:
-                    await self._send_chunk(channel, chunk)
+                    sent, final_text = await self._send_bubble(
+                        channel, chunk, pace=pace
+                    )
+                    delivered.append(final_text)
                 except Exception:
                     log.exception("failed to send message")
                     interrupted = True
                     break
+                sent_bubbles += 1
 
             if not interrupted:
                 break
@@ -356,20 +903,62 @@ class NoraBot(commands.Bot):
             if not newer or adaptations >= self.MAX_ADAPTATIONS:
                 break
             adaptations += 1
-            text, images = self._merge_entries(newer, images)
+            text, images, voice_reply = self._merge_entries(
+                newer, images, voice_reply
+            )
             log.info("he talked over her, dropping the rest of the burst")
+            await self._rethink_pause()
 
         self.nora.record_reply(scope, delivered)
         if delivered:
             log.info("[%s] <- %d text(s)", scope, len(delivered))
 
+    def _return_delay(self, idle_minutes: float | None) -> float:
+        cfg = self.settings.chat
+        if idle_minutes is None or idle_minutes < cfg.long_gap_minutes:
+            return 0.0
+        low = max(0.0, float(cfg.return_delay_min))
+        high = max(low, float(cfg.return_delay_max))
+        return random.uniform(low, high)
+
+    def _wake_delay(self, scope: str) -> float:
+        cfg = self.settings.chat
+        now = datetime.now()
+        if not presence.just_woke(
+            now, self.settings.presence.sleep_hours, cfg.waking_minutes
+        ):
+            return 0.0
+        today = now.date()
+        if self._wake_delay_used.get(scope) == today:
+            return 0.0
+        self._wake_delay_used[scope] = today
+        low = max(0.0, float(cfg.wake_delay_min))
+        high = max(low, float(cfg.wake_delay_max))
+        return random.uniform(low, high)
+
+    def _rethink_delay(self) -> float:
+        cfg = self.settings.chat
+        low = max(0.0, float(cfg.rethink_delay_min))
+        high = max(low, float(cfg.rethink_delay_max))
+        return random.uniform(low, high)
+
+    async def _rethink_pause(self) -> None:
+        delay = self._rethink_delay()
+        if delay <= 0:
+            return
+        log.info("pausing %.1fs before typing the new reply", delay)
+        await asyncio.sleep(delay)
+
     @staticmethod
     def _merge_entries(
-        entries: Pending, fallback_images: list[bytes]
-    ) -> tuple[str, list[bytes]]:
+        entries: Pending,
+        fallback_images: list[bytes],
+        fallback_voice: bool = False,
+    ) -> tuple[str, list[bytes], bool]:
         text = "\n".join(e[0] for e in entries).strip()
         images = [blob for entry in entries for blob in entry[3]][:MAX_IMAGES]
-        return text, (images or fallback_images)
+        voice = fallback_voice or any(e[4] for e in entries)
+        return text, (images or fallback_images), voice
 
     def _take_pending_for(self, cid: int, author_id: Any) -> Pending:
         """Pull only this person's queued messages, leaving others alone."""
@@ -380,7 +969,81 @@ class NoraBot(commands.Bot):
         self._pending[cid] = [e for e in pending if e[1] != author_id]
         return mine
 
-    async def _send_chunk(self, channel: Any, chunk: str) -> None:
+    def _bubble_gap(self) -> float:
+        cfg = self.settings.chat
+        low = max(0.0, float(cfg.bubble_gap_min))
+        high = max(low, float(cfg.bubble_gap_max))
+        return random.uniform(low, high)
+
+    async def _maybe_tease_typing(self, channel: Any) -> None:
+        """Occasionally start typing, then stop without sending anything."""
+        cfg = self.settings.chat
+        chance = max(0.0, min(1.0, float(cfg.typing_tease_chance)))
+        if chance <= 0 or random.random() >= chance:
+            return
+        low = max(0.0, float(cfg.typing_tease_min))
+        high = max(low, float(cfg.typing_tease_max))
+        async with channel.typing():
+            await asyncio.sleep(random.uniform(low, high))
+        await asyncio.sleep(random.uniform(0.15, 0.5))
+
+    def _typo_variant(self, text: str) -> tuple[str, str | None]:
+        """Return (text_to_send, corrected_text) for a rare self-correction."""
+        cfg = self.settings.chat
+        chance = max(0.0, min(1.0, float(cfg.self_correct_chance)))
+        if chance <= 0 or random.random() >= chance:
+            return text, None
+        matches = list(re.finditer(r"[A-Za-z]{5,}", text))
+        if not matches:
+            return text, None
+        for _ in range(8):
+            match = random.choice(matches)
+            word = match.group(0)
+            indexes = [
+                index
+                for index in range(1, len(word) - 2)
+                if word[index] != word[index + 1]
+            ]
+            if not indexes:
+                continue
+            index = random.choice(indexes)
+            typo = word[:index] + word[index + 1] + word[index] + word[index + 2:]
+            if typo != word:
+                return text[: match.start()] + typo + text[match.end():], text
+        return text, None
+
+    async def _send_bubble(
+        self, channel: Any, chunk: str, *, pace: float = 1.0
+    ) -> tuple[Any, str]:
+        """Send one bubble, with an optional quick correction edit."""
+        send_text, correction = self._typo_variant(chunk)
+        sent = await self._send_chunk(channel, send_text, pace=pace)
+        if correction and sent is not None:
+            delay = random.uniform(
+                self.settings.chat.self_correct_delay_min,
+                self.settings.chat.self_correct_delay_max,
+            )
+            if delay > 0:
+                await asyncio.sleep(delay)
+            try:
+                await sent.edit(content=correction)
+            except Exception:
+                log.warning("could not correct a typo", exc_info=True)
+        return sent, (correction or send_text)
+
+    def _think_pause(self) -> float:
+        """How long she stops mid-reply to think, or 0 for no pause."""
+        cfg = self.settings.chat
+        chance = max(0.0, min(1.0, float(cfg.think_pause_chance)))
+        if chance <= 0 or random.random() >= chance:
+            return 0.0
+        low = max(0.0, float(cfg.think_pause_min))
+        high = max(low, float(cfg.think_pause_max))
+        return random.uniform(low, high)
+
+    async def _send_chunk(
+        self, channel: Any, chunk: str, *, pace: float = 1.0
+    ) -> Any | None:
         cfg = self.settings.chat
         delay = typing_seconds(
             chunk,
@@ -388,14 +1051,32 @@ class NoraBot(commands.Bot):
             minimum=cfg.min_delay,
             maximum=cfg.max_delay,
         )
+        delay *= max(0.5, min(2.0, float(pace)))
+        pause = self._think_pause()
+        if pause <= 0:
+            async with channel.typing():
+                await asyncio.sleep(delay)
+                return await channel.send(chunk)
+
+        # Type for a bit, let the indicator drop while she thinks, then finish.
+        typed = delay * random.uniform(0.3, 0.7)
         async with channel.typing():
-            await asyncio.sleep(delay)
-            await channel.send(chunk)
+            await asyncio.sleep(typed)
+        log.info("stopping to think for %.1fs mid-reply", pause)
+        await asyncio.sleep(pause)
+        async with channel.typing():
+            await asyncio.sleep(max(0.05, delay - typed))
+            return await channel.send(chunk)
 
     async def _deliver(self, channel: Any, chunks: list[str]) -> None:
-        """Type for roughly as long as the bubble is, then send it."""
-        for chunk in chunks:
-            await self._send_chunk(channel, chunk)
+        """Type for roughly as long as each bubble is, then send it."""
+        for index, chunk in enumerate(chunks):
+            if index:
+                gap = self._bubble_gap()
+                if gap:
+                    await asyncio.sleep(gap)
+            await self._maybe_tease_typing(channel)
+            await self._send_bubble(channel, chunk)
 
     # -- presence --------------------------------------------------------
     async def _apply_presence(self) -> None:

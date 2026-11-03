@@ -36,6 +36,21 @@ def in_busy_window(now: datetime, cfg: PresenceConfig) -> bool:
     return any(_in_window(now.hour, window) for window in cfg.busy_hours or [])
 
 
+def just_woke(
+    now: datetime, sleep_hours: list[int], minutes: float
+) -> bool:
+    """True during the first few minutes after her normal wake-up hour."""
+    if not sleep_hours or len(sleep_hours) != 2 or minutes <= 0:
+        return False
+    try:
+        end = int(sleep_hours[1]) % 24
+    except (TypeError, ValueError):
+        return False
+    wake = now.replace(hour=end, minute=0, second=0, microsecond=0)
+    delta = (now - wake).total_seconds() / 60.0
+    return 0.0 <= delta < minutes
+
+
 def compute(now: datetime, cfg: PresenceConfig) -> PresenceState:
     """What she looks like right now.
 

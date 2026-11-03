@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime
 from typing import Any
 
 from . import consolidate as consolidate_mod
+from . import mood as mood_mod
 from .academic import AcademicCalendar
 from .config import Settings
 from .humanize import estimate_tokens, split_messages
@@ -53,6 +55,7 @@ class Nora:
         self.server = server or LlamaServer(settings)
         self.client = client or LlamaClient(settings, self.server)
         self._consolidating = False
+        self._mood_cache: dict[str, mood_mod.Mood] = {}
         self.timetable = self._load_timetable()
         self.academic = self._load_calendar()
 
@@ -255,6 +258,7 @@ class Nora:
     ) -> list[dict[str, Any]]:
         cfg = self.settings
         store = self.store_for(scope)
+        now = datetime.now()
         history = self._trim(
             store.recent(scope, cfg.chat.history_messages),
             cfg.chat.history_token_budget,
@@ -272,6 +276,17 @@ class Nora:
             exclude_ids=history_ids,
         )
 
+        current_mood = None
+        if cfg.mood.enabled:
+            current_mood = mood_mod.current(
+                store,
+                scope,
+                now,
+                sentiment=mood_mod.sentiment_of(history),
+                hold_minutes=cfg.mood.hold_minutes,
+            )
+            self._mood_cache[scope] = current_mood
+
         system = build_system_prompt(
             cfg,
             facts=[
@@ -280,6 +295,7 @@ class Nora:
             ],
             summaries=store.summaries(scope, cfg.memory.summaries_in_context)
             + self._recall_block(hits),
+            now=now,
             idle_minutes=idle_minutes,
             proactive=proactive,
             timetable=self.timetable if self.is_owner(scope) else None,
@@ -290,6 +306,7 @@ class Nora:
             adjust=adjust,
             routine=self._routine(scope),
             keep_alive=self._should_keep_alive(history, proactive=proactive),
+            mood=current_mood.line if current_mood else None,
         )
 
         messages: list[dict[str, Any]] = [{"role": "system", "content": system}]
@@ -311,6 +328,10 @@ class Nora:
                 cue = PROACTIVE_CUE
             messages.append({"role": "user", "content": cue})
         return messages
+
+    def mood_pace(self, scope: str) -> float:
+        mood = self._mood_cache.get(scope)
+        return mood.pace if mood is not None else 1.0
 
     def _routine(self, scope: str) -> str | None:
         """What her message history says about when he sleeps."""

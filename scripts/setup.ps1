@@ -8,7 +8,9 @@ param(
     [switch]$Cpu,
     [switch]$SkipModel,
     [switch]$SkipLlama,
-    [switch]$NoVision
+    [switch]$NoVision,
+    [switch]$NoVoice,
+    [switch]$NoTTS
 )
 
 $ErrorActionPreference = "Stop"
@@ -54,6 +56,18 @@ if (-not $SkipModel) {
     if (-not $NoVision) { $modelArgs += "--mmproj" }
     & $venvPy @modelArgs
     if ($LASTEXITCODE -ne 0) { throw "model download failed" }
+}
+
+if (-not $NoVoice) {
+    Write-Host "downloading the speech-to-text model ..." -ForegroundColor Yellow
+    & $venvPy (Join-Path $root "scripts\fetch_voice.py")
+    if ($LASTEXITCODE -ne 0) { throw "voice model download failed" }
+}
+
+if (-not $NoTTS) {
+    Write-Host "downloading the Kokoro voice model ..." -ForegroundColor Yellow
+    & $venvPy (Join-Path $root "scripts\fetch_tts.py")
+    if ($LASTEXITCODE -ne 0) { throw "Kokoro model download failed" }
 }
 
 $envFile = Join-Path $root ".env"

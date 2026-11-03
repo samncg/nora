@@ -19,9 +19,12 @@ summary: <one sentence about what happened and how he seemed>
 fact: <one durable thing about him>
 
 rules:
+- only write facts that were actually stated in the transcript. never guess, infer or invent a hobby, a game, a show, a person, a plan or an event. if it is not in the transcript, leave it out.
+- only record things he said or clearly confirmed. never treat nora's questions, jokes, suggestions or assumptions as facts about him.
+- the summary describes what actually happened. do not present nora's suggestions as plans unless he clearly agreed.
 - facts are short, third person, about the person she is talking to (use their name when you know it)
 - include names, dates, plans, worries, health, people in their life
-- include tastes and routines too: favourite games, shows, food, hobbies, what he does not like, what time he usually sleeps or wakes up
+- include tastes and routines only when he actually mentioned them: favourite games, shows, food, hobbies, what he does not like, what time he usually sleeps or wakes up
 - skip small talk, jokes and temporary states like "he is eating right now"
 - at most 6 fact lines, then exactly 1 summary line
 - no headings, no bullets, no explanations"""

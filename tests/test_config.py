@@ -24,9 +24,11 @@ def test_channels_are_ints():
     assert all(isinstance(c, int) for c in settings.discord.channels)
 
 
-def test_proactive_config_is_unset_by_default():
+def test_proactive_config_parses():
     settings = config.load()
-    assert settings.proactive.user_id is None
+    assert settings.proactive.user_id is None or isinstance(
+        settings.proactive.user_id, int
+    )
     assert len(settings.proactive.quiet_hours) == 2
     assert all(isinstance(h, int) for h in settings.proactive.quiet_hours)
 
@@ -69,6 +71,34 @@ def test_mmproj_is_auto_detected(tmp_path):
     assert found is not None and found.name == "mmproj-model-q8_0.gguf"
 
 
+def test_voice_config_is_parsed():
+    settings = config.load()
+    assert isinstance(settings.voice.enabled, bool)
+    assert settings.voice.model
+    assert settings.voice.max_bytes > 0
+
+
+def test_tts_config_is_parsed():
+    settings = config.load()
+    assert isinstance(settings.tts.enabled, bool)
+    assert settings.tts.voice
+    assert settings.tts.model
+    assert settings.tts.voices
+
+
+def test_chat_timing_config_is_parsed():
+    settings = config.load()
+    assert settings.chat.long_gap_minutes > 0
+    assert settings.chat.return_delay_max >= settings.chat.return_delay_min
+    assert settings.chat.rethink_delay_max >= settings.chat.rethink_delay_min
+
+
+def test_mood_config_is_parsed():
+    settings = config.load()
+    assert isinstance(settings.mood.enabled, bool)
+    assert settings.mood.hold_minutes > 0
+
+
 def test_persona_prompt_exists_and_sets_the_voice():
     settings = config.load()
     prompt = settings.persona_prompt
@@ -81,6 +111,10 @@ def test_persona_prompt_exists_and_sets_the_voice():
     assert "tsundere" not in prompt
     # she texts without full stops
     assert "never end a text with a full stop" in prompt
+    # she does not invent shared plans, hobbies or recent releases
+    assert "never make things up" in prompt
+    assert "only the ones he has actually told you about" in prompt
+    assert "never mention new releases" in prompt
 
 
 def test_missing_model_raises_helpful_error(tmp_path):

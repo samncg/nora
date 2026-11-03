@@ -25,8 +25,10 @@ class FakeChannel:
         self.id = cid
         self.guild = None
         self.sent: list[str] = []
+        self.typing_calls = 0
 
     def typing(self) -> FakeTyping:
+        self.typing_calls += 1
         return FakeTyping()
 
     async def send(self, text: str) -> None:
@@ -38,6 +40,79 @@ class FakeAuthor:
         self.id = uid
         self.display_name = name
         self.bot = False
+
+
+class FakeAttachment:
+    def __init__(
+        self,
+        data: bytes = b"audio",
+        *,
+        content_type: str = "audio/ogg",
+        filename: str = "voice-message.ogg",
+    ):
+        self.size = len(data)
+        self.content_type = content_type
+        self.filename = filename
+        self._data = data
+
+    def is_voice_message(self) -> bool:
+        return True
+
+    async def read(self) -> bytes:
+        return self._data
+
+
+class FakeTranscriber:
+    def __init__(self, text: str):
+        self.text = text
+
+    def transcribe_many(self, clips) -> str:
+        return self.text
+
+
+class FakeSpeaker:
+    def __init__(self, speech=None):
+        self.speech = speech
+        self.texts: list[str] = []
+
+    def speak_chunks(self, chunks):
+        self.texts.append(" ".join(chunks))
+        return self.speech
+
+    def speak(self, text: str):
+        return self.speak_chunks([text])
+
+
+def _voice_message(channel, author, attachment):
+    return SimpleNamespace(
+        channel=channel,
+        author=author,
+        guild=None,
+        content="",
+        attachments=[attachment],
+        stickers=[],
+        mentions=[],
+        reference=None,
+        flags=SimpleNamespace(voice=True),
+    )
+
+
+class FakeSent:
+    def __init__(self, content: str):
+        self.content = content
+        self.edits: list[str] = []
+
+    async def edit(self, content: str) -> None:
+        self.edits.append(content)
+        self.content = content
+
+
+class FakeReactable:
+    def __init__(self):
+        self.reactions: list[str] = []
+
+    async def add_reaction(self, emoji: str) -> None:
+        self.reactions.append(emoji)
 
 
 class StubNora:
@@ -65,6 +140,9 @@ class StubNora:
     def recall(self, *args, **kwargs):
         return []
 
+    def mood_pace(self, scope):
+        return 1.0
+
     async def close(self):
         self.store.close()
 
@@ -77,6 +155,22 @@ def _settings(tmp_path):
     settings.chat.min_delay = 0.01
     settings.chat.max_delay = 0.02
     settings.chat.typing_cps = 1000
+    settings.chat.bubble_gap_min = 0.0
+    settings.chat.bubble_gap_max = 0.0
+    settings.chat.typing_tease_chance = 0.0
+    settings.chat.think_pause_chance = 0.0
+    settings.chat.self_correct_chance = 0.0
+    settings.chat.self_correct_delay_min = 0.0
+    settings.chat.self_correct_delay_max = 0.0
+    settings.chat.rethink_delay_min = 0.01
+    settings.chat.rethink_delay_max = 0.02
+    settings.chat.return_delay_min = 0.0
+    settings.chat.return_delay_max = 0.0
+    settings.chat.waking_minutes = 0.0
+    settings.chat.wake_delay_min = 0.0
+    settings.chat.wake_delay_max = 0.0
+    settings.tts.enabled = False  # never synthesize or upload in unit tests
+    settings.reactions.enabled = False  # reactions are tested directly
     return settings
 
 
@@ -199,6 +293,147 @@ def test_drops_the_rest_of_the_burst_if_he_speaks(tmp_path):
         await bot.close()
 
     asyncio.run(scenario())
+
+
+def test_voice_message_is_transcribed_before_replying(tmp_path):
+    async def scenario():
+        settings = _settings(tmp_path)
+        stub = StubNora(MemoryStore(tmp_path / "voice.db"))
+        bot = NoraBot(settings, stub)
+        bot.transcriber = FakeTranscriber("hey are you free tomorrow")
+        channel = FakeChannel(55)
+        author = FakeAuthor()
+
+        await bot.on_message(_voice_message(channel, author, FakeAttachment()))
+        await asyncio.sleep(0.3)
+
+        assert [text for _, text, _ in stub.calls] == [
+            "hey are you free tomorrow"
+        ]
+        assert channel.sent == ["part one", "part two"]
+        await bot.close()
+
+    asyncio.run(scenario())
+
+
+def test_silent_voice_message_gets_a_fallback(tmp_path):
+    async def scenario():
+        settings = _settings(tmp_path)
+        stub = StubNora(MemoryStore(tmp_path / "voice2.db"))
+        bot = NoraBot(settings, stub)
+        bot.transcriber = FakeTranscriber("")
+        channel = FakeChannel(56)
+        author = FakeAuthor()
+
+        await bot.on_message(_voice_message(channel, author, FakeAttachment()))
+
+        assert channel.sent == ["i couldnt hear that, say it again?"]
+        assert stub.stored == ["i couldnt hear that, say it again?"]
+        assert stub.store.recent("u:1", 5)[0]["content"] == "[sent a voice message]"
+        await bot.close()
+
+    asyncio.run(scenario())
+
+
+def test_voice_note_gets_a_voice_reply(tmp_path):
+    async def scenario():
+        settings = _settings(tmp_path)
+        settings.tts.enabled = True
+        stub = StubNora(MemoryStore(tmp_path / "voice3.db"))
+        bot = NoraBot(settings, stub)
+        bot.transcriber = FakeTranscriber("hey are you free tomorrow")
+        speech = SimpleNamespace(duration=1.2, opus=b"ogg", waveform=b"\x00" * 256)
+        speaker = FakeSpeaker(speech)
+        bot.speaker = speaker
+        sent = []
+
+        async def send_voice(channel, clip):
+            sent.append(clip)
+
+        bot._send_voice_clip = send_voice
+        channel = FakeChannel(57)
+        author = FakeAuthor()
+
+        await bot.on_message(_voice_message(channel, author, FakeAttachment()))
+        await asyncio.sleep(0.3)
+
+        assert speaker.texts == ["part one part two"]
+        assert sent == [speech]
+        assert channel.sent == []  # no duplicate text reply
+        assert stub.stored == ["part one", "part two"]
+        await bot.close()
+
+    asyncio.run(scenario())
+
+
+def test_voice_reply_falls_back_to_text(tmp_path):
+    async def scenario():
+        settings = _settings(tmp_path)
+        settings.tts.enabled = True
+        stub = StubNora(MemoryStore(tmp_path / "voice4.db"))
+        bot = NoraBot(settings, stub)
+        bot.transcriber = FakeTranscriber("hey")
+        bot.speaker = FakeSpeaker(None)  # synthesis failed
+        channel = FakeChannel(58)
+        author = FakeAuthor()
+
+        await bot.on_message(_voice_message(channel, author, FakeAttachment()))
+        await asyncio.sleep(0.3)
+
+        assert channel.sent == ["part one", "part two"]
+        await bot.close()
+
+    asyncio.run(scenario())
+
+
+def test_voice_message_upload_uses_discord_voice_fields(tmp_path, monkeypatch):
+    captured = {}
+
+    class FakeResponse:
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {}
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def post(self, url, **kwargs):
+            captured["url"] = url
+            captured.update(kwargs)
+            return FakeResponse()
+
+    monkeypatch.setattr("nora.discord_bot.httpx.AsyncClient", FakeClient)
+
+    async def scenario():
+        settings = _settings(tmp_path)
+        settings.discord.token = "test-token"
+        bot = NoraBot(settings, StubNora(MemoryStore(tmp_path / "voice5.db")))
+        speech = SimpleNamespace(
+            duration=1.5, opus=b"OggS-data", waveform=b"\x01" * 256
+        )
+        await bot._send_voice_clip(SimpleNamespace(id=123), speech)
+        await bot.close()
+
+    asyncio.run(scenario())
+
+    import json
+
+    payload = json.loads(captured["data"]["payload_json"])
+    assert payload["flags"] == 8192
+    assert payload["attachments"][0]["filename"] == "voice-message.ogg"
+    assert payload["attachments"][0]["duration_secs"] == 1.5
+    assert len(payload["attachments"][0]["waveform"]) > 0
+    assert captured["files"]["files[0]"][0] == "voice-message.ogg"
+    assert captured["url"].endswith("/channels/123/messages")
 
 
 def test_presence_reflects_availability(tmp_path):
@@ -331,6 +566,291 @@ def test_allow_users_can_block_strangers(tmp_path):
 
         settings.discord.allow_users = []
         assert bot._user_allowed(2) is True
+        await bot.close()
+
+    asyncio.run(scenario())
+
+
+def test_wake_delay_once_per_day(tmp_path, monkeypatch):
+    settings = _settings(tmp_path)
+    settings.chat.waking_minutes = 45
+    settings.chat.wake_delay_min = 2
+    settings.chat.wake_delay_max = 3
+    monkeypatch.setattr(
+        "nora.discord_bot.presence.just_woke", lambda *args, **kwargs: True
+    )
+    bot = NoraBot(settings, StubNora(MemoryStore(tmp_path / "wake.db")))
+
+    first = bot._wake_delay("u:1")
+    assert 2.0 <= first <= 3.0
+    assert bot._wake_delay("u:1") == 0.0
+    assert 2.0 <= bot._wake_delay("u:2") <= 3.0
+    asyncio.run(bot.close())
+
+
+def test_rethink_delay_uses_configured_range(tmp_path):
+    settings = _settings(tmp_path)
+    settings.chat.rethink_delay_min = 2.0
+    settings.chat.rethink_delay_max = 3.0
+    bot = NoraBot(settings, StubNora(MemoryStore(tmp_path / "rethink.db")))
+    assert 2.0 <= bot._rethink_delay() <= 3.0
+    asyncio.run(bot.close())
+
+
+def test_return_delay_only_after_a_long_gap(tmp_path):
+    settings = _settings(tmp_path)
+    settings.chat.long_gap_minutes = 180
+    settings.chat.return_delay_min = 5
+    settings.chat.return_delay_max = 6
+    bot = NoraBot(settings, StubNora(MemoryStore(tmp_path / "return.db")))
+    assert bot._return_delay(None) == 0.0
+    assert bot._return_delay(30) == 0.0
+    assert 5.0 <= bot._return_delay(200) <= 6.0
+    asyncio.run(bot.close())
+
+
+def test_bubble_gap_uses_configured_range(tmp_path):
+    settings = _settings(tmp_path)
+    settings.chat.bubble_gap_min = 0.4
+    settings.chat.bubble_gap_max = 0.9
+    bot = NoraBot(settings, StubNora(MemoryStore(tmp_path / "bubble.db")))
+    assert 0.4 <= bot._bubble_gap() <= 0.9
+    asyncio.run(bot.close())
+
+
+def test_think_pause_uses_configured_range(tmp_path):
+    settings = _settings(tmp_path)
+    settings.chat.think_pause_chance = 1.0
+    settings.chat.think_pause_min = 2.0
+    settings.chat.think_pause_max = 4.0
+    bot = NoraBot(settings, StubNora(MemoryStore(tmp_path / "think.db")))
+    assert 2.0 <= bot._think_pause() <= 4.0
+    asyncio.run(bot.close())
+
+
+def test_think_pause_can_be_disabled(tmp_path):
+    settings = _settings(tmp_path)
+    settings.chat.think_pause_chance = 0.0
+    bot = NoraBot(settings, StubNora(MemoryStore(tmp_path / "think_off.db")))
+    assert bot._think_pause() == 0.0
+    asyncio.run(bot.close())
+
+
+def test_think_pause_stops_typing_then_resumes(tmp_path):
+    async def scenario():
+        settings = _settings(tmp_path)
+        settings.chat.think_pause_chance = 1.0
+        settings.chat.think_pause_min = 0.01
+        settings.chat.think_pause_max = 0.02
+        bot = NoraBot(settings, StubNora(MemoryStore(tmp_path / "think2.db")))
+        channel = FakeChannel(62)
+
+        await bot._send_chunk(channel, "hello there")
+
+        assert channel.sent == ["hello there"]
+        # typed, dropped the indicator while thinking, then typed again
+        assert channel.typing_calls == 2
+        await bot.close()
+
+    asyncio.run(scenario())
+
+
+def test_typo_variant_returns_the_original_as_correction(tmp_path):
+    settings = _settings(tmp_path)
+    settings.chat.self_correct_chance = 1.0
+    bot = NoraBot(settings, StubNora(MemoryStore(tmp_path / "typo.db")))
+    typo, correction = bot._typo_variant("hello friend")
+    assert correction == "hello friend"
+    assert typo != correction
+    asyncio.run(bot.close())
+
+
+def test_send_bubble_sends_typo_then_edits(tmp_path):
+    async def scenario():
+        settings = _settings(tmp_path)
+        settings.chat.self_correct_chance = 1.0
+        bot = NoraBot(settings, StubNora(MemoryStore(tmp_path / "typo2.db")))
+        channel = FakeChannel(61)
+        sent_messages: list[FakeSent] = []
+
+        async def send(text):
+            message = FakeSent(text)
+            sent_messages.append(message)
+            channel.sent.append(text)
+            return message
+
+        channel.send = send
+        _, final = await bot._send_bubble(channel, "hello friend")
+
+        assert final == "hello friend"
+        assert channel.sent[0] != "hello friend"
+        assert sent_messages[0].edits == ["hello friend"]
+        await bot.close()
+
+    asyncio.run(scenario())
+
+
+def test_pick_reaction_matches_tone():
+    assert NoraBot._pick_reaction("i miss you") == "❤️"
+    assert NoraBot._pick_reaction("i got the job") == "🔥"
+    assert NoraBot._pick_reaction("rough day") == "😭"
+    assert NoraBot._pick_reaction("lmao no way") == "💀"
+    # no clear cue means no reaction, never a random one
+    assert NoraBot._pick_reaction("neutral words") is None
+    assert NoraBot._pick_reaction("my deadline is thursday") is None
+    assert NoraBot._pick_reaction("") is None
+
+
+def test_farewell_cues():
+    assert NoraBot._is_farewell("ttyl")
+    assert NoraBot._is_farewell("goodbye!")
+    assert NoraBot._is_farewell("gotta go")
+    assert NoraBot._is_farewell("see ya")
+    assert NoraBot._is_farewell("goodnight")
+    assert not NoraBot._is_farewell("good movie")
+    assert not NoraBot._is_farewell("what time is it")
+
+
+def test_farewell_always_gets_a_heart(tmp_path):
+    async def scenario():
+        settings = _settings(tmp_path)
+        settings.reactions.enabled = True
+        settings.reactions.chance = 0.0  # normal reactions never roll
+        settings.reactions.cooldown_minutes = 60
+        bot = NoraBot(settings, StubNora(MemoryStore(tmp_path / "farewell.db")))
+        message = FakeReactable()
+
+        await bot._maybe_react(message, "u:1", "ttyl")
+        assert message.reactions == ["❤️"]
+
+        # the cooldown must not swallow a second goodbye
+        await bot._maybe_react(message, "u:1", "goodnight!")
+        assert message.reactions == ["❤️", "❤️"]
+
+        # a normal cued message still obeys the chance roll
+        await bot._maybe_react(message, "u:1", "lmao no way")
+        assert message.reactions == ["❤️", "❤️"]
+        await bot.close()
+
+    asyncio.run(scenario())
+
+
+def test_farewell_reaction_is_scheduled(tmp_path):
+    async def scenario():
+        settings = _settings(tmp_path)
+        settings.reactions.enabled = True
+        settings.reactions.chance = 0.0
+        settings.reactions.delay_min = 0.05
+        settings.reactions.delay_max = 0.05
+        bot = NoraBot(settings, StubNora(MemoryStore(tmp_path / "farewell2.db")))
+        message = FakeReactable()
+
+        bot._schedule_reaction(message, "u:1", "gotta go")
+        assert message.reactions == []
+        await asyncio.sleep(0.2)
+        assert message.reactions == ["❤️"]
+        await bot.close()
+
+    asyncio.run(scenario())
+
+
+def test_reaction_note_is_compact():
+    assert (
+        NoraBot._reaction_note("😭", "  you   ok? ")
+        == '[reacted 😭 to your message: "you ok?"]'
+    )
+
+
+def test_maybe_react_skips_neutral_text(tmp_path):
+    async def scenario():
+        settings = _settings(tmp_path)
+        settings.reactions.enabled = True
+        settings.reactions.chance = 1.0
+        bot = NoraBot(settings, StubNora(MemoryStore(tmp_path / "react_neutral.db")))
+        message = FakeReactable()
+
+        await bot._maybe_react(message, "u:1", "what time is it")
+        assert message.reactions == []
+        await bot.close()
+
+    asyncio.run(scenario())
+
+
+def test_reaction_is_delayed(tmp_path):
+    async def scenario():
+        settings = _settings(tmp_path)
+        settings.reactions.enabled = True
+        settings.reactions.chance = 1.0
+        settings.reactions.delay_min = 0.05
+        settings.reactions.delay_max = 0.05
+        bot = NoraBot(settings, StubNora(MemoryStore(tmp_path / "react_delay.db")))
+        message = FakeReactable()
+
+        bot._schedule_reaction(message, "u:1", "i miss you")
+        # it does not land the instant the message arrives
+        assert message.reactions == []
+
+        await asyncio.sleep(0.2)
+        assert message.reactions == ["❤️"]
+        await bot.close()
+
+    asyncio.run(scenario())
+
+
+def test_maybe_react_respects_cooldown(tmp_path):
+    async def scenario():
+        settings = _settings(tmp_path)
+        settings.reactions.enabled = True
+        settings.reactions.chance = 1.0
+        settings.reactions.cooldown_minutes = 20
+        bot = NoraBot(settings, StubNora(MemoryStore(tmp_path / "react.db")))
+        message = FakeReactable()
+
+        await bot._maybe_react(message, "u:1", "i miss you")
+        assert message.reactions == ["❤️"]
+
+        await bot._maybe_react(message, "u:1", "i got the job")
+        assert message.reactions == ["❤️"]  # still cooling down
+
+        await bot._maybe_react(message, "u:2", "i got the job")
+        assert message.reactions == ["❤️", "🔥"]
+        await bot.close()
+
+    asyncio.run(scenario())
+
+
+def test_user_reaction_is_remembered(tmp_path):
+    class BotWithUser(NoraBot):
+        user = SimpleNamespace(id=99)
+
+    async def scenario():
+        settings = _settings(tmp_path)
+        settings.reactions.enabled = True
+        settings.reactions.remember_user_reactions = True
+        store = MemoryStore(tmp_path / "react2.db")
+        bot = BotWithUser(settings, StubNora(store))
+        message = SimpleNamespace(
+            content="you ok?",
+            author=SimpleNamespace(id=99),
+        )
+
+        async def fetch_message(message_id):
+            return message
+
+        channel = SimpleNamespace(fetch_message=fetch_message)
+        bot.get_channel = lambda cid: channel
+        payload = SimpleNamespace(
+            user_id=1,
+            channel_id=5,
+            message_id=7,
+            emoji="😭",
+            member=None,
+        )
+
+        await bot.on_raw_reaction_add(payload)
+
+        recent = store.recent("u:1", 1)
+        assert recent[0]["content"] == '[reacted 😭 to your message: "you ok?"]'
         await bot.close()
 
     asyncio.run(scenario())

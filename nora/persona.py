@@ -13,8 +13,10 @@ PROACTIVE_BLOCK = (
     "slept, that thing he was worried about, or the hobby he told you about. use "
     "the memories above.\n"
     "- you can add one line about your own day after that, but he comes first.\n"
-    "- only reference memories that are written above. never invent a memory, a "
-    "plan or a place you two do not have.\n"
+    "- only reference memories that are written above. never invent a memory, "
+    "a plan, a hobby, a game, a show or a place you two do not have.\n"
+    "- if you do not have a memory to open with, ask about his day or what he is "
+    "up to. do not pretend to know.\n"
     "- never open with \"hey\", \"you there\", \"just checking in\" or \"how are you\".\n"
     "- 1 or 2 short texts. no stacked questions."
 )
@@ -48,7 +50,8 @@ KEEP_ALIVE_BLOCK = (
     "- your last few texts were just reactions. this time leave him something to "
     "answer: one short question, a dumb challenge, or a claim he will want to "
     "argue with.\n"
-    "- exactly one hook. do not stack questions."
+    "- exactly one hook. do not stack questions.\n"
+    "- keep it about him or about you, not a made-up shared memory or plan."
 )
 
 ADJUST_BLOCK = (
@@ -98,6 +101,7 @@ def build_system_prompt(
     worry_level: int = 1,
     keep_alive: bool = False,
     routine: str | None = None,
+    mood: str | None = None,
     adjust: bool = False,
 ) -> str:
     now = now or datetime.now()
@@ -134,6 +138,9 @@ def build_system_prompt(
     if routine:
         blocks.append(f"# his routine\n- {routine}")
 
+    if mood:
+        blocks.append(f"# your mood right now\n- {mood}")
+
     if keep_alive and not proactive:
         blocks.append(KEEP_ALIVE_BLOCK)
 
@@ -154,11 +161,19 @@ def build_system_prompt(
 
     if facts:
         lines = "\n".join(f"- {f}" for f in facts)
-        blocks.append(f"# things you know about him (do not recite these)\n{lines}")
+        blocks.append(f"# things you know about him (the only facts you may claim to know; do not recite them)\n{lines}")
 
     if summaries:
         lines = "\n".join(f"- {s}" for s in summaries)
         blocks.append(f"# what you two talked about before\n{lines}")
+
+    if not facts:
+        blocks.append(
+            "# you do not know much about him yet\n"
+            "- there are no saved facts about his hobbies, favourite things or plans "
+            "with you.\n"
+            "- do not pretend you know them. ask instead.\n"
+        )
 
     blocks.append(
         f"# rules of this text\n"

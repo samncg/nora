@@ -16,10 +16,13 @@ nora: are they still decent or was that just day one energy
 ## Features
 
 - **Local model, no cloud bills** — llama.cpp `llama-server` is spawned and supervised by Nora. If it dies, she restarts it.
-- **Human texting style** — 1–3 short bubbles, lowercase, no full stops, no emoji, no markdown, and normal shorthand (`rn`, `tmr`, `bc`, `tho`, `idk`). Typing delays scale with message length.
+- **Human texting style** — 1–3 short bubbles, lowercase, no full stops, no emoji, no markdown, and normal shorthand (`rn`, `tmr`, `bc`, `tho`, `idk`). Typing delays scale with message length. If you text over her, she pauses before starting the new reply; after hours away, her first reply takes longer, then normal speed.
+- **Feels present** — small gaps between her bubbles, occasional false-start typing, mid-reply pauses to think, emoji reactions, rare typo edits, moods, and a slower first reply after she wakes up.
 - **One memory per person** — every Discord user gets their own SQLite file, so conversations, facts, and summaries never overlap.
 - **Long-term memory** — the full transcript is stored forever, older stretches are summarized, durable facts are extracted, and relevant memories are pulled back in by keyword recall.
 - **Sees images** — optional vision projector lets her look at photos you send.
+- **Understands voice notes** — Discord voice messages are transcribed locally with Whisper, so you can talk instead of type.
+- **Replies in her own voice** — optional Kokoro-82M voice notes and voice-channel speech (off by default).
 - **Texts first sometimes** — memory-aware check-ins with quiet hours, a daily cap, and backoff when you stop answering.
 - **Keeps the thread alive** — she asks where you went if you vanish mid-conversation, and tries not to dead-end replies.
 - **Knows your schedule** — optional timetable and academic calendar context for one owner account.
@@ -32,6 +35,7 @@ nora: are they still decent or was that just day one energy
 - Python 3.10+
 - A Discord bot token (free)
 - An NVIDIA GPU with roughly 4–5 GB of free VRAM for a 4-bit E4B model. CPU works too, just slower (`setup.ps1 -Cpu`).
+- About 150 MB for the speech-to-text model and 350 MB for Kokoro TTS (downloaded once by setup).
 
 ## Quick start
 
@@ -47,7 +51,9 @@ powershell -ExecutionPolicy Bypass -File scripts\setup.ps1
 2. download a current llama.cpp Windows release into `vendor\llama`
 3. download a 4-bit E4B Gemma GGUF into `models` (about 5 GB)
 4. download the vision projector unless you pass `-NoVision`
-5. create `.env` from `.env.example`
+5. download the speech-to-text model unless you pass `-NoVoice` (about 150 MB)
+6. download the Kokoro voice model unless you pass `-NoTTS` (only needed if you enable voice replies; about 350 MB)
+7. create `.env` from `.env.example`
 
 Then:
 
@@ -67,6 +73,8 @@ The first reply can take a while because the model has to warm up.
 ```powershell
 scripts\setup.ps1 -Cpu        # force the CPU llama.cpp build
 scripts\setup.ps1 -NoVision   # skip the vision projector
+scripts\setup.ps1 -NoVoice    # skip the speech-to-text model
+scripts\setup.ps1 -NoTTS      # skip the Kokoro text-to-speech model
 scripts\setup.ps1 -SkipModel  # keep an existing model
 scripts\setup.ps1 -SkipLlama  # keep an existing llama.cpp build
 ```
@@ -139,8 +147,34 @@ Everything lives in `config.yaml` and is read at startup. Restart her after edit
 | `chat.chunk_chars` | soft target length per text; sentences are never cut to fit |
 | `chat.typing_cps` | simulated typing speed in characters per second |
 | `chat.debounce` | seconds to wait for more messages before answering |
+| `chat.bubble_gap_min` / `max` | pause between her own text bubbles |
+| `chat.typing_tease_chance` | chance of a typing burst that stops without a message |
+| `chat.think_pause_chance` / `think_pause_min` / `max` | chance and length of a mid-reply thinking pause |
+| `chat.self_correct_chance` | chance of a typo that she edits a moment later |
+| `chat.waking_minutes` / `wake_delay_min` / `max` | slower first reply after waking |
+| `chat.rethink_delay_min` / `max` | pause before answering again when you text over her |
+| `chat.long_gap_minutes` | silence before her first reply gets slower |
+| `chat.return_delay_min` / `max` | extra delay for that first reply |
 | `chat.reply_delay` | weighted pause buckets and `max_wait` before replying |
 | `chat.keep_conversation` | nudge her to keep the thread alive |
+| `voice.enabled` | transcribe Discord voice notes locally |
+| `voice.model` | faster-whisper model; `base.en` by default |
+| `voice.device` / `compute_type` | `cpu` + `int8`, or `cuda` + `float16` |
+| `voice.language` | spoken language; empty = auto-detect |
+| `voice.download_root` | where the Whisper model is cached |
+| `tts.enabled` | Kokoro voice replies on/off (off by default) |
+| `tts.voice` | Kokoro voice preset (`af_bella` by default) |
+| `tts.model` / `tts.voices` | local Kokoro ONNX model and voice pack |
+| `tts.reply_to_voice` | answer voice notes with voice notes |
+| `tts.voice_channel` | join and speak in voice channels |
+| `tts.speed` / `variation` | speaking pace and how much it changes per bubble |
+| `tts.sentence_pause` / `clause_pause` | pauses at sentence and comma boundaries |
+| `tts.continuous` | smoother prosody across sentence joins |
+| `reactions.enabled` | emoji reactions to your messages |
+| `reactions.chance` / `cooldown_minutes` | how often, and the minimum gap between them |
+| `reactions.delay_min` / `delay_max` | how long she waits before reacting, like she read it first |
+| `reactions.remember_user_reactions` | remember when you react to her messages |
+| `mood.enabled` / `hold_minutes` | slow-moving mood and how long it lasts |
 | `memory.dir` | directory holding one SQLite file per person |
 | `memory.db_path` | fallback database used only by the terminal client |
 | `memory.summarize_after` | messages before background consolidation starts |
@@ -194,6 +228,8 @@ In Discord, and in the terminal client:
 | `/memory` | list the facts she remembers, with ids |
 | `/forget <id>` | delete one fact |
 | `/status` | model state, uptime, and memory counts |
+| `/call` | bring her into your voice channel (voice replies must be on) |
+| `/leave` | make her leave the voice channel |
 | `/clear` | terminal client only: clear the local thread |
 
 ## One owner, everyone separate
@@ -204,11 +240,38 @@ The exception is your schedule: `timetable.yaml` and `calendar.yaml` belong to `
 
 Use `discord.allow_users` to restrict who can talk to her at all. Empty means anyone.
 
+## Small human details
+
+- **Bubble rhythm** — short gaps between her texts, and occasionally a typing burst that stops without sending anything.
+- **Thinking pauses** — now and then she stops mid-reply, lets the typing indicator drop for a few seconds, then finishes the message.
+- **Reactions** — she can drop 💀, 🔥, ❤️, or 😭 on your messages, but only when the tone clearly matches (hype, sad, funny, affectionate). A few seconds pass first, like she read it. Saying goodbye, ttyl, or goodnight always gets a ❤️. If you react to one of hers, she remembers it as a note in that person's history, but she will not reply just because of a reaction.
+- **Mistakes** — very rarely she sends a typo and edits it a second later.
+- **Moods** — each person gets a slow-moving mood (warm, playful, tired, quiet, soft) that tints her tone and typing pace. A genuinely sad message can pull her into soft mode immediately; otherwise a mood lasts a few hours.
+- **Waking up** — her first reply in the morning is slower, then she is back to normal speed.
+
 ## Persona
 
 `nora/prompts/girlfriend.txt` is the whole character. Delivery rules (bubble size, lowercase, no full stops, no emoji, no markdown) are enforced separately in code, so you can adjust the voice without rewriting the plumbing.
 
 The default is a warm, easy-to-talk-to girlfriend: playful, interested in your hobbies, honest about how she feels, and not mean. Edit the prompt and restart her to change it.
+
+## Voice messages
+
+Send a Discord voice note and she transcribes it locally with [faster-whisper](https://github.com/SYSTRAN/faster-whisper) before replying. The transcript is stored like a normal message, so it becomes part of her memory too.
+
+Voice replies are **off by default**. To turn them on, set `tts.enabled: true` in `config.yaml` and run `python scripts\fetch_tts.py` once. While they are off, she still understands voice notes and answers in text.
+
+When enabled, she answers a voice note with a voice note too, using the [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) ONNX build with the `af_bella` voice. Typed messages stay text unless you are in a voice channel with her.
+
+Set `tts.voice` to `af_heart` if you want the previous preset back.
+
+The speech version restores punctuation and expands texting shorthand (`rn`, `tmr`, `idk`, ...), then speaks each bubble separately with a short pause and a slight change of pace. That keeps her from sounding like a flat text-to-speech read. You can tune it with `tts.speed`, `tts.variation`, `tts.sentence_pause`, and `tts.clause_pause`.
+
+The first run downloads `base.en` into `data/whisper` (about 150 MB). There is no cloud speech API and no audio leaves the machine.
+
+`voice.device: cpu` with `compute_type: int8` works everywhere. If ctranslate2 can see your CUDA libraries, `cuda` + `float16` is faster. Use `voice.model` to pick `tiny.en`, `small.en`, and so on. Silent or unintelligible clips get "i couldnt hear that, say it again?" rather than a guessed transcript.
+
+`/call` brings her into your voice channel. While she is there, messages in that voice channel's text chat are spoken instead of typed, and `/leave` sends her back. She does not transcribe live call audio yet: voice notes are understood, call replies are spoken.
 
 ## Timetable and calendar
 
@@ -234,6 +297,8 @@ Fill them in, then set `timetable.enabled: true` and/or `calendar.enabled: true`
 | `nora/presence.py` | online / idle / busy status |
 | `nora/timetable.py`, `nora/academic.py` | schedule and calendar parsing |
 | `nora/vision.py` | image downscaling and re-encoding |
+| `nora/asr.py` | local Whisper transcription for voice messages |
+| `nora/tts.py` | Kokoro-82M (`af_bella`) voice synthesis and Ogg/Opus encoding |
 | `nora/supervisor.py` | detached keepalive, pid file, stale server cleanup |
 | `nora/tray.py`, `nora/runtime.py` | Windows tray icon and runtime overrides |
 | `scripts/` | setup, download, run, stop, status, wipe, autostart |
@@ -259,6 +324,14 @@ The suite uses temporary databases and synthetic fixtures, so it never touches a
 **GPU is idle** — the CUDA build needs a current NVIDIA driver. Run `scripts\fetch_llama.py --force` to redownload, or use `setup.ps1 -Cpu` once to confirm everything else works.
 
 **She cannot see images** — the vision projector is missing. Run `python scripts\fetch_model.py --mmproj` and restart her. `data/llama-server.log` should mention `loaded multimodal model`.
+
+**She does not understand voice notes** — the Whisper model or dependency may be missing. Run `python scripts\fetch_voice.py`, check `data/nora.log` for `transcribed voice message`, and make sure `faster-whisper` is installed. Voice runs on CPU by default.
+
+**She replies with text instead of voice** — voice replies are off by default. Set `tts.enabled: true`, make sure `models/kokoro/kokoro-v1.0.onnx` and `models/kokoro/voices-v1.0.bin` exist, and run `python scripts\fetch_tts.py`. If Discord rejects the voice-message upload, she falls back to an audio file attachment.
+
+**Her voice sounds flat** — raise `tts.variation` or `tts.sentence_pause` slightly, try `tts.speed: 0.95`, and keep `tts.continuous: true`. She already restores punctuation and expands shorthand for speech.
+
+**She will not join a voice channel** — she needs Connect and Speak permissions. If audio is silent, check `data/nora.log` for `libopus`; discord.py bundles the Windows DLL, but a broken install can prevent loading it.
 
 **She thinks you are in class when you are not** — check the date ranges in `calendar.yaml` and the days/times in `timetable.yaml`. Calendar state overrides the timetable.
 

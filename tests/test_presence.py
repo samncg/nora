@@ -4,7 +4,7 @@ from datetime import datetime
 
 from nora import config as config_module
 from nora.config import PresenceConfig
-from nora.presence import compute, in_busy_window, is_asleep
+from nora.presence import compute, in_busy_window, is_asleep, just_woke
 
 
 def cfg(**overrides) -> PresenceConfig:
@@ -78,6 +78,17 @@ def test_disabled_is_plain_online_without_activity():
     assert state.activity == ""
 
 
+def test_just_woke_window():
+    from datetime import datetime
+
+    assert just_woke(datetime(2026, 11, 3, 8, 10), [1, 8], 45) is True
+    assert just_woke(datetime(2026, 11, 3, 9, 0), [1, 8], 45) is False
+    assert just_woke(datetime(2026, 11, 3, 7, 30), [1, 8], 45) is False
+    assert just_woke(datetime(2026, 11, 3, 7, 10), [23, 7], 45) is True
+    assert just_woke(datetime(2026, 11, 3, 8, 10), [], 45) is False
+    assert just_woke(datetime(2026, 11, 3, 8, 10), [1, 8], 0) is False
+
+
 def test_real_config_is_parsed():
     settings = config_module.load()
     presence = settings.presence
@@ -85,4 +96,4 @@ def test_real_config_is_parsed():
     assert presence.sleep_hours == [1, 8]
     assert presence.online_emoji == "📱"
     assert presence.online_activity == "on my phone"
-    assert presence.busy_hours == []
+    assert all(isinstance(w, list) and len(w) == 2 for w in presence.busy_hours)

@@ -125,6 +125,23 @@ class MemoryStore:
         with self._lock:
             self._db.close()
 
+    # -- key/value -------------------------------------------------------
+    def kv_get(self, key: str) -> str | None:
+        with self._lock:
+            row = self._db.execute(
+                "SELECT value FROM kv WHERE key = ?", (key,)
+            ).fetchone()
+        return str(row["value"]) if row else None
+
+    def kv_set(self, key: str, value: str) -> None:
+        with self._lock:
+            self._db.execute(
+                "INSERT INTO kv (key, value) VALUES (?, ?)"
+                " ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (key, value),
+            )
+            self._db.commit()
+
     # -- migrations ------------------------------------------------------
     def _migrate(self, legacy_scope: str | None) -> None:
         self._migrate_facts_table()
@@ -251,6 +268,22 @@ class MemoryStore:
         with self._lock:
             row = self._db.execute(
                 "SELECT created_at FROM messages WHERE scope = ?"
+                " ORDER BY id DESC LIMIT 1",
+                (scope,),
+            ).fetchone()
+        if not row:
+            return None
+        try:
+            then = datetime.fromisoformat(row["created_at"])
+        except ValueError:
+            return None
+        return max(0.0, (datetime.now() - then).total_seconds() / 60.0)
+
+    def user_idle_minutes(self, scope: str) -> float | None:
+        """Minutes since the last message from the user in this scope."""
+        with self._lock:
+            row = self._db.execute(
+                "SELECT created_at FROM messages WHERE scope = ? AND role = 'user'"
                 " ORDER BY id DESC LIMIT 1",
                 (scope,),
             ).fetchone()

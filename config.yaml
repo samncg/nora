@@ -58,6 +58,35 @@ chat:
   # to send a second text.
   debounce: 2.0
 
+  # Rhythm between her own bubbles, and an occasional typing burst that stops.
+  bubble_gap_min: 0.4
+  bubble_gap_max: 1.4
+  typing_tease_chance: 0.06
+  typing_tease_min: 0.8
+  typing_tease_max: 1.8
+  # Occasionally stop mid-reply to think, then keep typing. The pause is long
+  # enough for Discord's typing indicator to drop, so it reads as a real stop.
+  think_pause_chance: 0.08
+  think_pause_min: 10
+  think_pause_max: 18
+  # Very rarely send a typo, then edit it a second later.
+  self_correct_chance: 0.015
+  self_correct_delay_min: 1.0
+  self_correct_delay_max: 2.5
+  # First reply after waking up is slower, once per day.
+  waking_minutes: 45
+  wake_delay_min: 6
+  wake_delay_max: 14
+
+  # If he sends something while she is already typing, she pauses before
+  # starting the new response.
+  rethink_delay_min: 2.0
+  rethink_delay_max: 4.5
+  # After this much silence, her first reply is slower, then normal again.
+  long_gap_minutes: 180
+  return_delay_min: 5
+  return_delay_max: 12
+
   # A short pause so she is not a literal webhook, but she is still quick.
   reply_delay:
     enabled: true
@@ -69,6 +98,57 @@ chat:
     # whatever she picks, she never leaves you waiting longer than this from
     # your first message of the burst
     max_wait: 30
+
+# Voice notes: local speech-to-text with faster-whisper. Nothing is uploaded.
+voice:
+  enabled: true
+  # tiny.en / base.en / small.en / medium.en (bigger = slower, more accurate)
+  model: base.en
+  # cpu is the safe default. cuda needs ctranslate2 to find your CUDA libs.
+  device: cpu
+  compute_type: int8
+  # empty = detect the language automatically
+  language: en
+  # downloaded once, then reused; data/ is git-ignored
+  download_root: data/whisper
+  max_bytes: 20971520
+
+# Local Kokoro-82M voice replies. af_bella is the voice preset.
+# Disabled for now; set enabled: true to turn voice replies back on.
+tts:
+  enabled: false
+  voice: af_bella
+  model: models/kokoro/kokoro-v1.0.onnx
+  voices: models/kokoro/voices-v1.0.bin
+  language: en-us
+  speed: 1.0
+  # slight pace changes and pauses make her sound less flat
+  variation: 0.05
+  sentence_pause: 0.3
+  clause_pause: 0.14
+  bubble_pause: 0.12
+  continuous: true
+  # reply with a voice note when he sends one
+  reply_to_voice: true
+  # join a voice channel when moved into one, and speak replies there
+  voice_channel: true
+  greeting: hey im here
+
+# Emoji reactions to his messages, and remembering when he reacts to hers.
+reactions:
+  enabled: true
+  chance: 0.18
+  cooldown_minutes: 20
+  # only reacts when the message clearly carries that tone, never at random
+  # and she waits a few seconds first, like she actually read it
+  delay_min: 4
+  delay_max: 11
+  remember_user_reactions: true
+
+# Slow-moving mood per person. Shapes her tone and typing pace.
+mood:
+  enabled: true
+  hold_minutes: 180
 
 memory:
   # Every person gets their own sqlite file in here. Nothing is shared.
@@ -105,7 +185,7 @@ presence:
   idle_activity: "sleeping"
   idle_emoji: "💤"
   # optional dnd windows, for example [[9, 12], [14, 17]]
-  busy_hours: []
+  busy_hours: [[9, 12], [14, 17]]
   busy_activity: "busy"
   busy_emoji: "🎧"
   # how often the status is re-checked

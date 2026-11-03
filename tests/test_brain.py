@@ -21,6 +21,14 @@ def png_bytes(size=(16, 16)) -> bytes:
     return buffer.getvalue()
 
 
+def test_consolidation_prompt_only_records_stated_facts():
+    from nora.consolidate import SYSTEM_PROMPT
+
+    assert "only write facts that were actually stated" in SYSTEM_PROMPT
+    assert "never treat nora's questions" in SYSTEM_PROMPT
+    assert "do not present nora's suggestions as plans" in SYSTEM_PROMPT
+
+
 def test_parse_output_from_lines():
     summary, facts = parse_output(
         "summary: he survived week one\n"
@@ -108,6 +116,17 @@ def test_build_messages_includes_persona_memory_and_history(tmp_path):
     assert messages[-2]["content"] == "my manager talks fast lol"
 
 
+def test_prompt_includes_a_mood(tmp_path):
+    settings = config.load()
+    settings.memory.db_path = str(tmp_path / "moodprompt.db")
+    store = MemoryStore(settings.path(settings.memory.db_path))
+    store.add_message("u:5", "user", "hey")
+
+    system = Nora(settings, store=store).build_messages("u:5")[0]["content"]
+
+    assert "# your mood right now" in system
+
+
 def test_guild_history_gets_speaker_labels(tmp_path):
     settings = config.load()
     settings.memory.db_path = str(tmp_path / "n.db")
@@ -151,6 +170,28 @@ def test_system_prompt_stays_quiet_for_short_gaps():
     settings = config.load()
     prompt = build_system_prompt(settings, facts=[], summaries=[], idle_minutes=5)
     assert "since you two last texted" not in prompt
+
+
+def test_prompt_says_when_nothing_is_known():
+    settings = config.load()
+    prompt = build_system_prompt(settings, facts=[], summaries=[])
+    assert "you do not know much about him yet" in prompt
+    assert "do not pretend you know them" in prompt
+
+
+def test_prompt_does_not_say_nothing_is_known_when_facts_exist():
+    settings = config.load()
+    prompt = build_system_prompt(settings, facts=["he likes chess"], summaries=[])
+    assert "he likes chess" in prompt
+    assert "you do not know much about him yet" not in prompt
+
+
+def test_proactive_prompt_forbids_invented_memories():
+    settings = config.load()
+    prompt = build_system_prompt(settings, facts=[], summaries=[], proactive=True)
+    assert "never invent a memory" in prompt
+    assert "a hobby, a game, a show" in prompt
+    assert "do not pretend to know" in prompt
 
 
 def test_timetable_and_calendar_reach_the_prompt(tmp_path):

@@ -49,6 +49,36 @@ def test_idle_minutes(store):
     assert store.idle_minutes("u:1") is not None
 
 
+def test_kv_roundtrip(store):
+    assert store.kv_get("mood") is None
+    store.kv_set("mood", "warm")
+    store.kv_set("mood", "playful")
+    assert store.kv_get("mood") == "playful"
+
+
+def test_user_idle_ignores_her_messages(store):
+    store.add_message("u:1", "assistant", "hey")
+    assert store.user_idle_minutes("u:1") is None
+    store.add_message("u:1", "user", "hi")
+    value = store.user_idle_minutes("u:1")
+    assert value is not None and value < 1
+
+
+def test_user_idle_minutes_measures_the_gap(store):
+    from datetime import datetime, timedelta
+
+    store.add_message("u:1", "user", "hi")
+    old = (datetime.now() - timedelta(hours=4)).isoformat(timespec="seconds")
+    store._db.execute(
+        "UPDATE messages SET created_at = ? WHERE scope = ?", (old, "u:1")
+    )
+    store._db.commit()
+
+    value = store.user_idle_minutes("u:1")
+    assert value is not None
+    assert 239 <= value <= 241
+
+
 def test_search_matches_words(store):
     store.add_message("u:1", "user", "my manager talks sooo fast at the new job")
     store.add_message("u:1", "user", "i bought milk")

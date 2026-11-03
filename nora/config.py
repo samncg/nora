@@ -90,9 +90,95 @@ class ChatConfig:
     min_delay: float = 0.6
     max_delay: float = 8.0
     debounce: float = 2.0
+    # Rhythm between her own bubbles, and an occasional typing burst that stops.
+    bubble_gap_min: float = 0.4
+    bubble_gap_max: float = 1.4
+    typing_tease_chance: float = 0.06
+    typing_tease_min: float = 0.8
+    typing_tease_max: float = 1.8
+    # Occasionally she stops mid-reply to think, then finishes typing. The pause
+    # has to clear Discord's ~10s typing indicator to actually look like a stop.
+    think_pause_chance: float = 0.08
+    think_pause_min: float = 10.0
+    think_pause_max: float = 18.0
+    # Very rarely send a typo, then edit it a second later.
+    self_correct_chance: float = 0.015
+    self_correct_delay_min: float = 1.0
+    self_correct_delay_max: float = 2.5
+    # First reply after waking up is slower, once per day.
+    waking_minutes: float = 45.0
+    wake_delay_min: float = 6.0
+    wake_delay_max: float = 14.0
+    # When he texts over her, pause before starting the new reply.
+    rethink_delay_min: float = 2.0
+    rethink_delay_max: float = 4.5
+    # After this much silence, her first reply takes longer; then normal speed.
+    long_gap_minutes: float = 180.0
+    return_delay_min: float = 5.0
+    return_delay_max: float = 12.0
     reply_delay: ReplyDelayConfig = field(default_factory=ReplyDelayConfig)
     # she tries to keep the thread alive instead of dead ending it
     keep_conversation: bool = True
+
+
+@dataclass
+class VoiceConfig:
+    # Local speech-to-text for voice notes. Nothing leaves the machine.
+    enabled: bool = True
+    # faster-whisper model: tiny.en / base.en / small.en / medium.en
+    model: str = "base.en"
+    # cpu is the safe default. cuda needs ctranslate2 to find the CUDA libs.
+    device: str = "cpu"
+    compute_type: str = "int8"
+    # empty = detect the language automatically
+    language: str = "en"
+    download_root: str = "data/whisper"
+    max_bytes: int = 20 * 1024 * 1024
+    max_clips: int = 2
+
+
+@dataclass
+class TTSConfig:
+    # Local Kokoro-82M text-to-speech. Used for voice replies and calls.
+    # Off by default; turn it on in config.yaml.
+    enabled: bool = False
+    voice: str = "af_bella"
+    model: str = "models/kokoro/kokoro-v1.0.onnx"
+    voices: str = "models/kokoro/voices-v1.0.bin"
+    language: str = "en-us"
+    speed: float = 1.0
+    # Vary pace and pauses slightly so consecutive bubbles do not sound flat.
+    variation: float = 0.05
+    sentence_pause: float = 0.3
+    clause_pause: float = 0.14
+    bubble_pause: float = 0.12
+    # Kokoro's continuous mode keeps prosody across sentence joins.
+    continuous: bool = True
+    # Reply with a voice note when the user sends one.
+    reply_to_voice: bool = True
+    # Join a voice channel when moved into one, and speak replies there.
+    voice_channel: bool = True
+    greeting: str = "hey im here"
+
+
+@dataclass
+class ReactionConfig:
+    # React to some of his messages, and remember when he reacts to hers.
+    enabled: bool = True
+    chance: float = 0.18
+    cooldown_minutes: float = 20.0
+    # Reactions land a few seconds later, after she has read the message,
+    # instead of firing the instant it arrives.
+    delay_min: float = 4.0
+    delay_max: float = 11.0
+    remember_user_reactions: bool = True
+
+
+@dataclass
+class MoodConfig:
+    # A slow-moving mood per person. It tints her tone and typing pace.
+    enabled: bool = True
+    hold_minutes: int = 180
 
 
 @dataclass
@@ -197,6 +283,10 @@ class Settings:
     model: ModelConfig = field(default_factory=ModelConfig)
     server: ServerConfig = field(default_factory=ServerConfig)
     chat: ChatConfig = field(default_factory=ChatConfig)
+    voice: VoiceConfig = field(default_factory=VoiceConfig)
+    tts: TTSConfig = field(default_factory=TTSConfig)
+    reactions: ReactionConfig = field(default_factory=ReactionConfig)
+    mood: MoodConfig = field(default_factory=MoodConfig)
     memory: MemoryConfig = field(default_factory=MemoryConfig)
     discord: DiscordConfig = field(default_factory=DiscordConfig)
     presence: PresenceConfig = field(default_factory=PresenceConfig)
