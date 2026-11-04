@@ -1,15 +1,16 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 import discord
 
-from nora import config
+from nora import config, greetings, reminders
 from nora.discord_bot import NoraBot
 from nora.memory import MemoryStore
 from nora.proactive import Decision
+from nora.reminders import Reminder
 
 
 class FakeTyping:
@@ -118,16 +119,24 @@ class FakeReactable:
 class StubNora:
     def __init__(self, store: MemoryStore):
         self.store = store
+        self.owner_id: int | None = None
         self.calls: list[tuple[str, str, bool]] = []
         self.stored: list[str] = []
         self.answers = ["part one", "part two"]
         self.on_compose = None
+
+    def is_owner(self, scope: str) -> bool:
+        return self.owner_id is not None and scope == f"u:{self.owner_id}"
 
     async def compose(self, scope, text, **kwargs):
         self.calls.append((scope, text, bool(kwargs.get("adjust", False))))
         if self.on_compose is not None:
             await self.on_compose(scope, text)
         return list(self.answers)
+
+    async def initiate(self, scope, **kwargs):
+        self.calls.append((scope, "initiate", bool(kwargs.get("occasion"))))
+        return list(self.answers) if self.answers else []
 
     def record_reply(self, scope, chunks):
         for chunk in chunks:
@@ -871,6 +880,322 @@ def test_unanswered_streak_counts_her_texts(tmp_path):
         store.add_message("dm:1", "user", "hey")
         assert bot._unanswered_streak("dm:1") == 0
 
+        await bot.close()
+
+    asyncio.run(scenario())
+
+
+# -- reminders, greetings, and his presence ---------------------------------
+class FakeMember:
+    def __init__(self, uid: int, status: str = "online", activities=()):
+        self.id = uid
+        self.status = SimpleNamespace(name=status)
+        self.activities = list(activities)
+
+
+class FakeActivity:
+    def __init__(self, name: str, kind: str = "playing"):
+        self.name = name
+        self.type = SimpleNamespace(name=kind)
+
+
+def _bot(tmp_path, **greeting_overrides):
+    settings = _settings(tmp_path)
+    settings.proactive.quiet_hours = [0, 0]  # never quiet during tests
+    for key, value in greeting_overrides.items():
+        setattr(settings.greetings, key, value)
+    store = MemoryStore(settings.path(settings.memory.db_path))
+    stub = StubNora(store)
+    stub.answers = []  # no model output, so the template fallback is used
+    bot = NoraBot(settings, stub)
+    channel = FakeChannel(7)
+    bot._direct_channel = channel
+    bot._proactive_uid = 1
+    return bot, stub, store, channel
+
+
+def test_events_in_a_message_are_remembered(tmp_path):
+    async def scenario():
+        bot, stub, store, _ = _bot(tmp_path)
+        stub.owner_id = 1
+        bot._remember_events("u:1", "i have an exam tmr at 2pm")
+
+        saved = reminders.load(store)
+        assert len(saved) == 1
+        assert saved[0].title == "exam"
+        await bot.close()
+
+    asyncio.run(scenario())
+
+
+def test_other_people_do_not_get_reminders(tmp_path):
+    async def scenario():
+        bot, stub, store, _ = _bot(tmp_path)
+        stub.owner_id = 1
+        bot._remember_events("u:2", "i have an exam tmr at 2pm")
+        assert reminders.load(store) == []
+        await bot.close()
+
+    asyncio.run(scenario())
+
+
+def test_ordinary_chatter_remembers_nothing(tmp_path):
+    async def scenario():
+        bot, stub, store, _ = _bot(tmp_path)
+        stub.owner_id = 1
+        bot._remember_events("u:1", "you free tomorrow?")
+        assert reminders.load(store) == []
+        await bot.close()
+
+    asyncio.run(scenario())
+
+
+def test_a_due_reminder_is_texted_back(tmp_path):
+    async def scenario():
+        bot, stub, store, channel = _bot(tmp_path)
+        now = datetime.now().replace(microsecond=0)
+        reminders.save(
+            store,
+            [
+                Reminder(
+                    title="exam",
+                    when=(now + timedelta(minutes=10)).isoformat(timespec="minutes"),
+                    lead_minutes=30,
+                    created_at=now.isoformat(timespec="minutes"),
+                )
+            ],
+        )
+
+        assert await bot._check_reminders(now) is True
+        assert len(channel.sent) == 1
+        assert "your exam is" in channel.sent[0]
+        assert "dont forget" in channel.sent[0]
+        # telling her about an occasion passes the occasion to the model
+        assert stub.calls[-1] == ("u:1", "initiate", True)
+
+        # it must not fire twice
+        assert await bot._check_reminders(now + timedelta(minutes=1)) is False
+        assert len(channel.sent) == 1
+
+        # and it is marked as sent in her memory
+        assert reminders.due(reminders.load(store), now) == []
+        await bot.close()
+
+    asyncio.run(scenario())
+
+
+def test_a_reminder_waits_for_its_lead_window(tmp_path):
+    async def scenario():
+        bot, _, store, channel = _bot(tmp_path)
+        now = datetime.now().replace(microsecond=0)
+        reminders.save(
+            store,
+            [
+                Reminder(
+                    title="exam",
+                    when=(now + timedelta(minutes=90)).isoformat(timespec="minutes"),
+                    lead_minutes=30,
+                    created_at=now.isoformat(timespec="minutes"),
+                )
+            ],
+        )
+
+        assert await bot._check_reminders(now) is False
+        assert channel.sent == []
+        await bot.close()
+
+    asyncio.run(scenario())
+
+
+def test_greeting_goes_out_once_a_day(tmp_path):
+    async def scenario():
+        bot, stub, _, channel = _bot(tmp_path)
+        morning = datetime(2026, 11, 4, 9, 0)
+
+        assert await bot._maybe_greet(morning) is True
+        assert len(channel.sent) == 1
+        assert channel.sent[0].startswith("morning")
+        assert stub.calls[-1] == ("u:1", "initiate", True)
+
+        assert await bot._maybe_greet(morning + timedelta(minutes=40)) is False
+        assert len(channel.sent) == 1
+
+        # the next day she may say it again
+        assert await bot._maybe_greet(morning + timedelta(days=1)) is True
+        assert len(channel.sent) == 2
+        await bot.close()
+
+    asyncio.run(scenario())
+
+
+def test_no_greeting_in_the_afternoon(tmp_path):
+    async def scenario():
+        bot, _, _, channel = _bot(tmp_path)
+        assert await bot._maybe_greet(datetime(2026, 11, 4, 15, 0)) is False
+        assert channel.sent == []
+        await bot.close()
+
+    asyncio.run(scenario())
+
+
+def test_no_greeting_right_after_they_talked(tmp_path):
+    async def scenario():
+        bot, _, store, channel = _bot(tmp_path)
+        store.add_message("u:1", "user", "hey")
+
+        assert await bot._maybe_greet(datetime(2026, 11, 4, 9, 0)) is False
+        assert channel.sent == []
+        await bot.close()
+
+    asyncio.run(scenario())
+
+
+def test_activity_is_only_cached_for_the_owner(tmp_path):
+    async def scenario():
+        bot, stub, _, _ = _bot(tmp_path)
+        stub.owner_id = 5
+
+        bot._remember_activity(
+            FakeMember(6, "dnd", [FakeActivity("Homework")])
+        )
+        assert bot._owner_activity is None
+
+        bot._remember_activity(
+            FakeMember(5, "online", [FakeActivity("Minecraft")])
+        )
+        assert bot._owner_activity == "he is online and playing Minecraft"
+        await bot.close()
+
+    asyncio.run(scenario())
+
+
+def test_his_activity_only_reaches_his_own_prompt(tmp_path):
+    async def scenario():
+        bot, stub, _, _ = _bot(tmp_path)
+        stub.owner_id = 1
+        bot._owner_activity = "he is online and playing Minecraft"
+
+        assert bot._owner_doing("u:1") == "he is online and playing Minecraft"
+        assert bot._owner_doing("u:2") is None
+
+        bot._track_owner = False
+        assert bot._owner_doing("u:1") is None
+        await bot.close()
+
+    asyncio.run(scenario())
+
+
+def test_presence_intents_follow_the_config(tmp_path):
+    settings = _settings(tmp_path)
+    settings.presence.track_owner = True
+    assert NoraBot(settings, StubNora(MemoryStore(settings.path(settings.memory.db_path)))).intents.presences
+
+    settings2 = _settings(tmp_path)
+    settings2.presence.track_owner = False
+    bot = NoraBot(
+        settings2, StubNora(MemoryStore(settings2.path(settings2.memory.db_path)))
+    )
+    assert not bot.intents.presences
+    assert not bot.intents.members
+
+
+def test_privileged_off_means_no_presence_tracking(tmp_path):
+    settings = _settings(tmp_path)
+    settings.presence.track_owner = True
+    bot = NoraBot(
+        settings,
+        StubNora(MemoryStore(settings.path(settings.memory.db_path))),
+        privileged=False,
+    )
+    assert not bot.intents.presences
+    assert not bot.intents.members
+    assert not bot._track_owner
+
+
+# -- learning his sleep schedule and the random reminder lead ---------------
+def test_saying_goodnight_teaches_her_his_bedtime(tmp_path):
+    async def scenario():
+        bot, stub, store, _ = _bot(tmp_path)
+        stub.owner_id = 1
+        for day in (1, 2, 3):
+            bot._note_greeting("u:1", "ok going to bed", datetime(2026, 11, day, 1, 10))
+
+        profile = greetings.load_profile(store)
+        assert len(profile[greetings.NIGHT]) == 3
+        start, _ = greetings.window_for(greetings.NIGHT, bot.settings.greetings, profile)
+        assert greetings.clock(start) == "00:40"
+        await bot.close()
+
+    asyncio.run(scenario())
+
+
+def test_a_learned_window_moves_the_greeting(tmp_path):
+    async def scenario():
+        bot, stub, store, channel = _bot(tmp_path)
+        stub.owner_id = 1
+        # he greets her at 07:40, so she starts aiming at 07:25
+        for day in (1, 2, 3):
+            greetings.note_user_greeting(store, "good morning", datetime(2026, 11, day, 7, 40))
+
+        # 07:30 is before the configured 08:00 window, but inside the learned one
+        assert await bot._maybe_greet(datetime(2026, 11, 4, 7, 30)) is True
+        assert len(channel.sent) == 1
+        await bot.close()
+
+    asyncio.run(scenario())
+
+
+def test_other_people_do_not_teach_her_his_schedule(tmp_path):
+    async def scenario():
+        bot, stub, store, _ = _bot(tmp_path)
+        stub.owner_id = 1
+        bot._note_greeting("u:2", "goodnight", datetime(2026, 11, 4, 2, 0))
+        assert greetings.load_profile(store)[greetings.NIGHT] == []
+        await bot.close()
+
+    asyncio.run(scenario())
+
+
+def test_reminders_pick_a_human_lead(tmp_path):
+    async def scenario():
+        bot, stub, store, _ = _bot(tmp_path)
+        stub.owner_id = 1
+        stub.answers = []
+        bot._remember_events("u:1", "i have an exam tmr at 2pm")
+
+        saved = reminders.load(store)
+        assert len(saved) == 1
+        assert saved[0].notify_at is not None
+        assert 10 <= saved[0].lead_minutes <= 50
+        await bot.close()
+
+    asyncio.run(scenario())
+
+
+def test_the_history_seed_moves_the_greeting(tmp_path):
+    async def scenario():
+        bot, stub, store, channel = _bot(tmp_path)
+        stub.owner_id = 1
+        bot._greeting_seed = {"morning": 6.0, "night": 22.5}
+
+        # 06:05 is nowhere near the configured 08:00 window
+        assert await bot._maybe_greet(datetime(2026, 11, 4, 6, 5)) is True
+        assert len(channel.sent) == 1
+        await bot.close()
+
+    asyncio.run(scenario())
+
+
+def test_a_goodnight_inside_quiet_hours_still_goes_out(tmp_path):
+    async def scenario():
+        bot, stub, store, channel = _bot(tmp_path)
+        stub.owner_id = 1
+        bot.settings.proactive.quiet_hours = [0, 8]
+        # his real bedtime, learned from his history
+        bot._greeting_seed = {"morning": 11.0, "night": 2.5}
+
+        assert await bot._maybe_greet(datetime(2026, 11, 5, 2, 30)) is True
+        assert len(channel.sent) == 1
         await bot.close()
 
     asyncio.run(scenario())

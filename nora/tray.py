@@ -18,6 +18,8 @@ try:
 except ImportError:  # pragma: no cover - optional at runtime
     pystray = None
 
+from . import dialogs
+from .llm import openrouter_free_models, probe_openrouter
 from .runtime import PRESET_LABELS
 
 log = logging.getLogger("nora.tray")
@@ -128,12 +130,33 @@ class NoraTray:
             ]
         )
 
+        provider = pystray.Menu(
+            pystray.MenuItem(
+                "Local llama.cpp",
+                self._on_use_local,
+                checked=self._local_checked,
+                radio=True,
+            ),
+            pystray.MenuItem(
+                "OpenRouter",
+                self._on_use_openrouter,
+                checked=self._openrouter_checked,
+                radio=True,
+            ),
+            pystray.Menu.SEPARATOR,
+            pystray.MenuItem(self._provider_label, None, enabled=False),
+            pystray.MenuItem("Choose OpenRouter model...", self._on_choose_model),
+            pystray.MenuItem("Set OpenRouter API key...", self._on_set_key),
+            pystray.MenuItem("Test OpenRouter", self._on_test_openrouter),
+        )
+
         return pystray.Menu(
             self._items["status"],
             pystray.Menu.SEPARATOR,
             self._items["text_now"],
             self._items["proactive"],
             pystray.MenuItem("How often she texts", presets),
+            pystray.MenuItem("Model provider", provider),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Open config.yaml", self._on_open_config),
             pystray.MenuItem("Open log", self._on_open_log),
@@ -202,6 +225,10 @@ class NoraTray:
         status = self._status
         if not status.get("ready"):
             return "Nora: offline"
+        if status.get("provider") == "openrouter":
+            if not status.get("model_ready"):
+                return "Nora: openrouter needs a key/model"
+            return f"Nora: online, {status.get('provider_model') or 'openrouter'}"
         if not status.get("model_ready"):
             return "Nora: online, model loading"
         if not status.get("proactive_enabled"):
@@ -213,6 +240,8 @@ class NoraTray:
         if not status.get("ready"):
             return "Nora - bot offline"
         parts = ["Nora - online"]
+        if status.get("provider") == "openrouter":
+            parts.append(f"openrouter {status.get('provider_model') or ''}".strip())
         if status.get("proactive_enabled"):
             sent = status.get("sent_today", 0)
             cap = status.get("max_per_day", 0)
@@ -245,6 +274,100 @@ class NoraTray:
     def _on_toggle_proactive(self, icon: Any, item: Any) -> None:
         enabled = not bool(self.bot.settings.proactive.enabled)
         self.bot.set_proactive_enabled(enabled)
+        self._refresh_now()
+
+    # -- model provider --------------------------------------------------
+    def _local_checked(self, item: Any = None) -> bool:
+        return self.bot.settings.provider.mode != "openrouter"
+
+    def _openrouter_checked(self, item: Any = None) -> bool:
+        return self.bot.settings.provider.mode == "openrouter"
+
+    def _provider_label(self, item: Any = None) -> str:
+        provider = self.bot.settings.provider
+        if provider.mode != "openrouter":
+            return "Local llama.cpp"
+        model = provider.openrouter.model or "no model"
+        key = "key set" if (provider.openrouter.api_key or "").strip() else "no key"
+        return f"OpenRouter: {model} ({key})"
+
+    def _run_dialog(self, fn: Any, *args: Any, **kwargs: Any) -> Any:
+        """Run Tk off the pystray thread and wait for the result."""
+        box: dict[str, Any] = {}
+
+        def run() -> None:
+            try:
+                box["value"] = fn(*args, **kwargs)
+            except Exception:
+                log.exception("dialog failed")
+
+        thread = threading.Thread(target=run, name="nora-dialog", daemon=True)
+        thread.start()
+        thread.join()
+        return box.get("value")
+
+    def _notify(self, message: str) -> None:
+        try:
+            if self.icon is not None:
+                self.icon.notify(message, "Nora")
+        except Exception:
+            log.debug("could not show a tray notification", exc_info=True)
+
+    def _ask_key(self) -> str | None:
+        provider = self.bot.settings.provider.openrouter
+        value = self._run_dialog(
+            dialogs.ask_text,
+            "OpenRouter API key",
+            "Paste your OpenRouter key (sk-or-...). It is saved locally in data/runtime.json.",
+            provider.api_key or "",
+            True,
+        )
+        return value.strip() if isinstance(value, str) and value.strip() else None
+
+    def _on_use_local(self, icon: Any, item: Any) -> None:
+        self.bot.controls.set_provider("local")
+        self._submit(self.bot.warm_model())
+        self._refresh_now()
+
+    def _on_use_openrouter(self, icon: Any, item: Any) -> None:
+        provider = self.bot.settings.provider.openrouter
+        if not (provider.api_key or "").strip():
+            key = self._ask_key()
+            if not key:
+                self._refresh_now()
+                return
+            self.bot.controls.set_openrouter_key(key)
+        if not (provider.model or "").strip():
+            self.bot.controls.set_openrouter_model(
+                "nvidia/nemotron-3.5-lightning:free"
+            )
+        self.bot.controls.set_provider("openrouter")
+        self._submit(self.bot.stop_local_model())
+        self._refresh_now()
+
+    def _on_set_key(self, icon: Any, item: Any) -> None:
+        key = self._ask_key()
+        if key:
+            self.bot.controls.set_openrouter_key(key)
+            self._notify("OpenRouter key saved.")
+        self._refresh_now()
+
+    def _on_choose_model(self, icon: Any, item: Any) -> None:
+        current = self.bot.settings.provider.openrouter.model or ""
+        options = openrouter_free_models()
+        if current and current not in options:
+            options = [current] + options
+        value = self._run_dialog(dialogs.choose_model, options, current)
+        if isinstance(value, str) and value.strip():
+            chosen = value.strip()
+            self.bot.controls.set_openrouter_model(chosen)
+            self._notify(f"Model set to {chosen}")
+        self._refresh_now()
+
+    def _on_test_openrouter(self, icon: Any, item: Any) -> None:
+        ok, message = probe_openrouter(self.bot.settings)
+        prefix = "OpenRouter works: " if ok else "OpenRouter failed: "
+        self._notify(prefix + message)
         self._refresh_now()
 
     def _on_restart(self, icon: Any, item: Any) -> None:

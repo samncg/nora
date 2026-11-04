@@ -123,6 +123,48 @@ def test_quiet_hours_show_in_tooltip(tray):
     assert "quiet hours" in tray._tooltip()
 
 
+def test_openrouter_provider_label_and_headline(tray):
+    provider = tray.bot.settings.provider
+    provider.mode = "openrouter"
+    provider.openrouter.model = "google/gemma-4-31b-it:free"
+    provider.openrouter.api_key = "sk-or-test"
+
+    assert "gemma-4-31b-it" in tray._provider_label()
+    assert "key set" in tray._provider_label()
+    assert tray._openrouter_checked() is True
+    assert tray._local_checked() is False
+
+    tray._apply_status(
+        {
+            "ready": True,
+            "model_ready": True,
+            "provider": "openrouter",
+            "provider_model": "google/gemma-4-31b-it:free",
+            "proactive_enabled": True,
+        }
+    )
+    assert "gemma-4-31b-it" in tray._headline()
+    assert "openrouter" in tray._tooltip().lower()
+
+
+def test_openrouter_without_key_is_not_ready(tray):
+    provider = tray.bot.settings.provider
+    provider.mode = "openrouter"
+    provider.openrouter.model = "google/gemma-4-31b-it:free"
+    provider.openrouter.api_key = None
+
+    tray._apply_status(
+        {
+            "ready": True,
+            "model_ready": False,
+            "provider": "openrouter",
+            "provider_model": provider.openrouter.model,
+            "proactive_enabled": True,
+        }
+    )
+    assert "needs a key" in tray._headline()
+
+
 def test_toggle_flips_proactive(tray):
     assert tray.bot.settings.proactive.enabled is True
 

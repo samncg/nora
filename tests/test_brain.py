@@ -485,3 +485,118 @@ def test_initiate_returns_nothing_when_the_model_is_silent(tmp_path):
 
     assert asyncio.run(nora.initiate("dm:1")) == []
     assert store.recent("dm:1", 5) == []
+
+
+# -- what he is doing, occasions, and upcoming events -----------------------
+def test_owner_prompt_includes_what_he_is_doing(tmp_path):
+    settings = config.load()
+    settings.memory.db_path = str(tmp_path / "n.db")
+    settings.persona.owner_id = 123456789012345678
+    store = MemoryStore(settings.path(settings.memory.db_path))
+    owner = "u:123456789012345678"
+    store.add_message(owner, "user", "hey")
+
+    nora = Nora(settings, store=store)
+    system = nora.build_messages(
+        owner, doing="he is online and playing Minecraft"
+    )[0]["content"]
+
+    assert "what he is doing right now" in system
+    assert "playing Minecraft" in system
+    assert "never mention that you are watching him" in system
+
+
+def test_other_people_never_see_the_activity(tmp_path):
+    settings = config.load()
+    settings.memory.db_path = str(tmp_path / "n.db")
+    settings.persona.owner_id = 123456789012345678
+    store = MemoryStore(settings.path(settings.memory.db_path))
+    store.add_message("u:555", "user", "hey")
+
+    nora = Nora(settings, store=store)
+    system = nora.build_messages(
+        "u:555", doing="he is online and playing Minecraft"
+    )[0]["content"]
+
+    assert "playing Minecraft" not in system
+    assert "what he is doing right now" not in system
+
+
+def test_morning_occasion_replaces_the_generic_proactive_block(tmp_path):
+    settings = config.load()
+    settings.memory.db_path = str(tmp_path / "n.db")
+    store = MemoryStore(settings.path(settings.memory.db_path))
+    client = RecordingClient("morning")
+    nora = Nora(settings, store=store, client=client)
+
+    asyncio.run(nora.initiate("u:5", occasion="morning"))
+
+    system, cue = client.messages[-1][0]["content"], client.messages[-1][-1]["content"]
+    assert "# good morning" in system
+    assert "# right now it is on you" not in system
+    assert "say good morning" in cue
+
+
+def test_reminder_occasion_carries_the_event(tmp_path):
+    settings = config.load()
+    settings.memory.db_path = str(tmp_path / "n.db")
+    store = MemoryStore(settings.path(settings.memory.db_path))
+    client = RecordingClient("exam!")
+    nora = Nora(settings, store=store, client=client)
+
+    asyncio.run(
+        nora.initiate(
+            "u:5",
+            occasion="reminder",
+            occasion_note="your exam is at 2pm tomorrow",
+        )
+    )
+
+    system = client.messages[-1][0]["content"]
+    assert "he has something coming up" in system
+    assert "your exam is at 2pm tomorrow" in system
+
+
+def test_upcoming_events_reach_the_prompt(tmp_path):
+    from datetime import datetime, timedelta
+
+    from nora.reminders import Reminder, save
+
+    settings = config.load()
+    settings.memory.db_path = str(tmp_path / "n.db")
+    store = MemoryStore(settings.path(settings.memory.db_path))
+    store.add_message("u:5", "user", "hey")
+    soon = datetime.now() + timedelta(hours=5)
+    save(
+        store,
+        [
+            Reminder(
+                title="exam",
+                when=soon.replace(second=0, microsecond=0).isoformat(timespec="minutes"),
+            )
+        ],
+    )
+
+    system = Nora(settings, store=store).build_messages("u:5")[0]["content"]
+
+    assert "things he told you are coming up" in system
+    assert "exam at" in system
+
+
+def test_no_event_block_when_nothing_is_scheduled(tmp_path):
+    settings = config.load()
+    settings.memory.db_path = str(tmp_path / "n.db")
+    store = MemoryStore(settings.path(settings.memory.db_path))
+    store.add_message("u:5", "user", "hey")
+
+    system = Nora(settings, store=store).build_messages("u:5")[0]["content"]
+
+    assert "things he told you are coming up" not in system
+
+
+def test_greeting_occasions_have_blocks():
+    from nora import greetings
+    from nora.persona import OCCASION_BLOCKS
+
+    assert greetings.MORNING in OCCASION_BLOCKS
+    assert greetings.NIGHT in OCCASION_BLOCKS

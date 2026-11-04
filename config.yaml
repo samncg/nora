@@ -41,6 +41,23 @@ server:
   startup_timeout: 300
   log_file: data/llama-server.log
 
+# Which backend answers her. "local" runs llama.cpp on this machine.
+# "openrouter" uses a hosted model, including free ones.
+provider:
+  # local | openrouter
+  mode: local
+  # if the hosted model fails (429, outage, bad key), answer with the local
+  # model instead of leaving him with an error
+  fallback_to_local: true
+  openrouter:
+    # Leave empty and put OPENROUTER_API_KEY in .env, or set it from the tray.
+    api_key:
+    base_url: https://openrouter.ai/api/v1
+    # Any slug from openrouter.ai/models. Free models end in ":free".
+    model: nvidia/nemotron-3.5-lightning:free
+    referer: https://github.com/samncg/nora
+    title: Nora
+
 chat:
   # How many past messages to feed back in (rough cap, trimmed to token budget).
   history_messages: 24
@@ -190,6 +207,12 @@ presence:
   busy_emoji: "🎧"
   # how often the status is re-checked
   refresh_minutes: 5
+  # Let her see YOUR status: online / idle / dnd, your custom status, and what
+  # you are playing or listening to. Needs the Presence and Server Members
+  # intents turned on in the Discord developer portal (Bot -> Privileged
+  # Gateway Intents), otherwise Discord rejects the login with code 4014 and
+  # she starts again with this off.
+  track_owner: true
 
 # She texts you first sometimes. This is a DM, not a channel.
 proactive:
@@ -219,6 +242,39 @@ proactive:
     max_minutes: 240
     max_followups: 2
 
+# She remembers things you mention and texts you shortly before they start.
+# "i have an exam tmr at 2pm" -> a text at 1:30pm saying dont forget, good luck.
+reminders:
+  enabled: true
+  # how long before the event the reminder goes out, on average
+  lead_minutes: 30
+  # the real lead is picked at random inside lead_minutes +/- this, so it does
+  # not feel like a notification that always lands at the same offset
+  lead_jitter_minutes: 20
+  # never later than this before the event
+  min_lead_minutes: 5
+  # if you only say the day ("exam tomorrow"), she assumes this hour
+  default_hour: 9
+  # how many days ahead she may mention an event in passing
+  prompt_days: 2
+
+# Good morning and goodnight, once a day each.
+greetings:
+  enabled: true
+  # first greeting window: [morning_hour, morning_hour + morning_window_hours)
+  morning_hour: 8
+  morning_window_hours: 3
+  # goodnight window, wraps past midnight if you make it long enough
+  night_hour: 23
+  night_window_hours: 2
+  chance: 1.0
+  # do not greet you if you two were texting this recently
+  skip_if_chatted_minutes: 30
+  # follow your actual sleep schedule: every time you say good morning or
+  # goodnight to her, she remembers the hour and moves the windows to match
+  adapt_to_sleep: true
+  min_samples: 3
+
 tray:
   # Notification-area icon: toggle texting-first, pick how often, text me now.
   # Set to false if you run her on a machine with no desktop session.
@@ -232,7 +288,7 @@ timetable:
 # Semester breaks, study weeks, exam weeks and public holidays.
 # Fill in calendar.yaml, then set this to true.
 calendar:
-  enabled: false
+  enabled: true
   file: calendar.yaml
 
 log:

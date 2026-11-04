@@ -93,3 +93,35 @@ def test_snapshot_reports_current_values(tmp_path):
     assert snapshot["enabled"] is True
     assert snapshot["preset"] == "normal"
     assert snapshot["max_per_day"] == 4
+
+
+def test_provider_switch_persists_key_and_model(tmp_path):
+    path = tmp_path / "runtime.json"
+    settings = make_settings(tmp_path)
+    controls = RuntimeControls(settings, path=path)
+
+    assert controls.set_provider("openrouter") is True
+    assert settings.provider.mode == "openrouter"
+    assert controls.set_openrouter_model("google/gemma-4-31b-it:free") is True
+    controls.set_openrouter_key("sk-or-secret")
+
+    assert settings.provider.openrouter.api_key == "sk-or-secret"
+    stored = json.loads(path.read_text(encoding="utf-8"))
+    assert stored["provider"] == "openrouter"
+    assert stored["openrouter_model"] == "google/gemma-4-31b-it:free"
+    assert stored["openrouter_api_key"] == "sk-or-secret"
+
+    reloaded = make_settings(tmp_path)
+    RuntimeControls(reloaded, path=path)
+    assert reloaded.provider.mode == "openrouter"
+    assert reloaded.provider.openrouter.model == "google/gemma-4-31b-it:free"
+    assert reloaded.provider.openrouter.api_key == "sk-or-secret"
+
+
+def test_invalid_provider_is_rejected(tmp_path):
+    settings = make_settings(tmp_path)
+    controls = RuntimeControls(settings, path=tmp_path / "runtime.json")
+
+    assert controls.set_provider("cloud") is False
+    assert settings.provider.mode == "local"
+    assert controls.set_openrouter_model("   ") is False

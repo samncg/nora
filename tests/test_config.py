@@ -117,6 +117,33 @@ def test_persona_prompt_exists_and_sets_the_voice():
     assert "never mention new releases" in prompt
 
 
+def test_openrouter_config_and_env_key(monkeypatch, tmp_path):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-env")
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        "provider:\n"
+        "  mode: openrouter\n"
+        "  openrouter:\n"
+        "    model: google/gemma-4-31b-it:free\n",
+        encoding="utf-8",
+    )
+
+    settings = config.load(path)
+
+    assert settings.provider.mode == "openrouter"
+    assert settings.provider.openrouter.model == "google/gemma-4-31b-it:free"
+    assert settings.provider.openrouter.api_key == "sk-or-env"
+    assert settings.provider.openrouter.base_url == "https://openrouter.ai/api/v1"
+
+
+def test_unknown_provider_mode_falls_back_to_local(monkeypatch, tmp_path):
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    path = tmp_path / "config.yaml"
+    path.write_text("provider:\n  mode: somewhere-else\n", encoding="utf-8")
+
+    assert config.load(path).provider.mode == "local"
+
+
 def test_missing_model_raises_helpful_error(tmp_path):
     settings = config.load()
     settings.model.gguf_dir = str(tmp_path)
@@ -138,3 +165,63 @@ def test_scheduled_scripts_exist():
     root = Path(__file__).resolve().parent.parent
     for name in ("setup.ps1", "run.ps1", "install_autostart.ps1"):
         assert (root / "scripts" / name).exists()
+
+
+def test_reminders_config_parses():
+    settings = config.load()
+    assert settings.reminders.enabled is True
+    assert settings.reminders.lead_minutes == 30
+    assert settings.reminders.default_hour == 9
+
+
+def test_greetings_config_parses():
+    settings = config.load()
+    assert settings.greetings.enabled is True
+    assert settings.greetings.morning_hour == 8
+    assert settings.greetings.night_hour == 23
+    assert 0.0 <= settings.greetings.chance <= 1.0
+
+
+def test_presence_tracking_is_on_by_default():
+    settings = config.load()
+    assert settings.presence.track_owner is True
+
+
+def test_greeting_hours_are_wrapped_and_clamped(tmp_path):
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        "greetings:\n"
+        "  morning_hour: 26\n"
+        "  night_hour: -1\n"
+        "  chance: 4\n"
+        "reminders:\n"
+        "  lead_minutes: -5\n"
+        "  default_hour: 25\n",
+        encoding="utf-8",
+    )
+
+    settings = config.load(path)
+
+    assert settings.greetings.morning_hour == 2
+    assert settings.greetings.night_hour == 23
+    assert settings.greetings.chance == 1.0
+    assert settings.reminders.lead_minutes == 0
+    assert settings.reminders.default_hour == 1
+
+
+def test_reminder_lead_jitter_is_parsed():
+    settings = config.load()
+    assert settings.reminders.lead_jitter_minutes == 20
+    assert settings.reminders.min_lead_minutes == 5
+
+
+def test_greetings_adapt_to_his_sleep_schedule_by_default():
+    settings = config.load()
+    assert settings.greetings.adapt_to_sleep is True
+    assert settings.greetings.min_samples == 3
+
+
+def test_proactive_is_pointed_at_the_owner():
+    settings = config.load()
+    assert settings.proactive.user_id == settings.persona.owner_id
+    assert settings.proactive.enabled is True

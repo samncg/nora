@@ -66,6 +66,17 @@ class RuntimeControls:
         if cfg.max_gap_minutes < cfg.min_gap_minutes:
             cfg.max_gap_minutes = cfg.min_gap_minutes
 
+        provider = self.settings.provider
+        mode = self._data.get("provider")
+        if isinstance(mode, str) and mode in {"local", "openrouter"}:
+            provider.mode = mode
+        key = self._data.get("openrouter_api_key")
+        if isinstance(key, str) and key.strip():
+            provider.openrouter.api_key = key.strip()
+        model = self._data.get("openrouter_model")
+        if isinstance(model, str) and model.strip():
+            provider.openrouter.model = model.strip()
+
     # -- updates ---------------------------------------------------------
     def set_proactive_enabled(self, enabled: bool) -> None:
         enabled = bool(enabled)
@@ -91,6 +102,37 @@ class RuntimeControls:
             if abs(cfg.min_gap_minutes - values["min_gap_minutes"]) < 0.01:
                 return name
         return None
+
+    # -- provider --------------------------------------------------------
+    def set_provider(self, mode: str) -> bool:
+        mode = (mode or "").strip().lower()
+        if mode not in {"local", "openrouter"}:
+            return False
+        self.settings.provider.mode = mode
+        self._data["provider"] = mode
+        self._write()
+        log.info("provider -> %s", mode)
+        return True
+
+    def set_openrouter_key(self, key: str) -> None:
+        key = (key or "").strip()
+        self.settings.provider.openrouter.api_key = key or None
+        if key:
+            self._data["openrouter_api_key"] = key
+        else:
+            self._data.pop("openrouter_api_key", None)
+        self._write()
+        log.info("openrouter key %s", "saved" if key else "cleared")
+
+    def set_openrouter_model(self, model: str) -> bool:
+        model = (model or "").strip()
+        if not model:
+            return False
+        self.settings.provider.openrouter.model = model
+        self._data["openrouter_model"] = model
+        self._write()
+        log.info("openrouter model -> %s", model)
+        return True
 
     def snapshot(self) -> dict[str, Any]:
         cfg = self.settings.proactive

@@ -20,12 +20,13 @@ BANNER = """
 
 async def run(settings: Settings, nora: Nora, *, fast: bool = False) -> None:
     print(BANNER)
-    try:
-        await nora.server.ensure_running()
-    except Exception as exc:
-        print(f"[model failed to start] {exc}")
-        print("run: python scripts/fetch_model.py  and  python scripts/fetch_llama.py")
-        return
+    if settings.provider.mode != "openrouter":
+        try:
+            await nora.server.ensure_running()
+        except Exception as exc:
+            print(f"[model failed to start] {exc}")
+            print("run: python scripts/fetch_model.py  and  python scripts/fetch_llama.py")
+            return
 
     while True:
         try:

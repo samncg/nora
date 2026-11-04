@@ -51,6 +51,27 @@ class ServerConfig:
 
 
 @dataclass
+class OpenRouterConfig:
+    # Empty means: set OPENROUTER_API_KEY in .env, or paste a key from the tray.
+    api_key: str | None = None
+    base_url: str = "https://openrouter.ai/api/v1"
+    # Any model slug from openrouter.ai/models. Free models end in ":free".
+    model: str = "nvidia/nemotron-3.5-lightning:free"
+    referer: str = "https://github.com/samncg/nora"
+    title: str = "Nora"
+
+
+@dataclass
+class ProviderConfig:
+    # local = llama.cpp on this machine; openrouter = hosted models by API.
+    mode: str = "local"
+    # If a hosted request fails (rate limit, outage), answer with the local
+    # model instead of leaving him with an error message.
+    fallback_to_local: bool = True
+    openrouter: OpenRouterConfig = field(default_factory=OpenRouterConfig)
+
+
+@dataclass
 class DelayBucket:
     chance: float = 0.25
     min: float = 2.0
@@ -251,6 +272,46 @@ class PresenceConfig:
     busy_activity: str = "busy"
     busy_emoji: str = "🎧"
     refresh_minutes: float = 5.0
+    # See your status and what you are playing. Needs the Presence and Server
+    # Members intents enabled in the Discord developer portal.
+    track_owner: bool = True
+
+
+@dataclass
+class RemindersConfig:
+    """She remembers things he mentions and texts him before they start."""
+
+    enabled: bool = True
+    # how long before the event the reminder goes out, on average
+    lead_minutes: int = 30
+    # the actual lead is picked at random inside lead_minutes +/- this, so it
+    # does not look like a scheduled notification every single time
+    lead_jitter_minutes: int = 20
+    # never leave it later than this before the event
+    min_lead_minutes: int = 5
+    # when he only says the day ("exam tomorrow"), assume this hour
+    default_hour: int = 9
+    # how many days ahead of an event she may mention it in the prompt
+    prompt_days: float = 2.0
+
+
+@dataclass
+class GreetingsConfig:
+    """Good morning and goodnight, once a day each."""
+
+    enabled: bool = True
+    morning_hour: int = 8
+    morning_window_hours: float = 3.0
+    night_hour: int = 23
+    night_window_hours: float = 2.0
+    chance: float = 1.0
+    # skip it if you two were already texting this recently
+    skip_if_chatted_minutes: float = 30.0
+    # move the two windows to follow when he actually says good morning and
+    # goodnight, instead of the fixed hours above
+    adapt_to_sleep: bool = True
+    # how many of his greetings to learn from before the window moves
+    min_samples: int = 3
 
 
 @dataclass
@@ -282,6 +343,7 @@ class Settings:
     persona: PersonaConfig = field(default_factory=PersonaConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
     server: ServerConfig = field(default_factory=ServerConfig)
+    provider: ProviderConfig = field(default_factory=ProviderConfig)
     chat: ChatConfig = field(default_factory=ChatConfig)
     voice: VoiceConfig = field(default_factory=VoiceConfig)
     tts: TTSConfig = field(default_factory=TTSConfig)
@@ -291,6 +353,8 @@ class Settings:
     discord: DiscordConfig = field(default_factory=DiscordConfig)
     presence: PresenceConfig = field(default_factory=PresenceConfig)
     proactive: ProactiveConfig = field(default_factory=ProactiveConfig)
+    reminders: RemindersConfig = field(default_factory=RemindersConfig)
+    greetings: GreetingsConfig = field(default_factory=GreetingsConfig)
     timetable: TimetableConfig = field(default_factory=TimetableConfig)
     calendar: CalendarConfig = field(default_factory=CalendarConfig)
     tray: TrayConfig = field(default_factory=TrayConfig)
@@ -364,6 +428,19 @@ def load(path: str | Path | None = None) -> Settings:
 
     settings = _build(Settings, data)
     settings.discord.token = os.environ.get("DISCORD_TOKEN") or None
+
+    mode = str(settings.provider.mode or "local").strip().lower()
+    settings.provider.mode = mode if mode in {"local", "openrouter"} else "local"
+    openrouter = settings.provider.openrouter
+    openrouter.model = (openrouter.model or "").strip()
+    openrouter.base_url = (
+        openrouter.base_url or "https://openrouter.ai/api/v1"
+    ).strip().rstrip("/")
+    if openrouter.api_key:
+        openrouter.api_key = openrouter.api_key.strip()
+    env_key = (os.environ.get("OPENROUTER_API_KEY") or "").strip()
+    if env_key:
+        openrouter.api_key = env_key
     # Allow channel ids written as strings (or quoted) in YAML.
     settings.discord.channels = [int(c) for c in settings.discord.channels]
     settings.discord.allow_users = [int(c) for c in settings.discord.allow_users]
@@ -386,4 +463,22 @@ def load(path: str | Path | None = None) -> Settings:
         if isinstance(window, (list, tuple)) and len(window) >= 2:
             busy.append([int(window[0]) % 24, int(window[1]) % 24])
     settings.presence.busy_hours = busy
+
+    reminders = settings.reminders
+    reminders.default_hour = int(reminders.default_hour) % 24
+    reminders.lead_minutes = max(0, int(reminders.lead_minutes))
+    reminders.lead_jitter_minutes = max(0, int(reminders.lead_jitter_minutes))
+    reminders.min_lead_minutes = max(0, int(reminders.min_lead_minutes))
+    reminders.prompt_days = max(0.0, float(reminders.prompt_days))
+
+    greetings = settings.greetings
+    greetings.morning_hour = int(greetings.morning_hour) % 24
+    greetings.night_hour = int(greetings.night_hour) % 24
+    greetings.morning_window_hours = max(0.0, float(greetings.morning_window_hours))
+    greetings.night_window_hours = max(0.0, float(greetings.night_window_hours))
+    greetings.chance = max(0.0, min(1.0, float(greetings.chance)))
+    greetings.skip_if_chatted_minutes = max(
+        0.0, float(greetings.skip_if_chatted_minutes)
+    )
+    greetings.min_samples = max(1, int(greetings.min_samples))
     return settings

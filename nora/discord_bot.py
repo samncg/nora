@@ -19,13 +19,17 @@ import httpx
 from discord import app_commands
 from discord.ext import commands
 
+from . import activity as activity_mod
+from . import greetings as greetings_mod
 from . import pacing
 from . import presence
 from . import proactive as proactive_mod
+from . import reminders as reminders_mod
 from .asr import Transcriber
 from .brain import PHOTO_MARKER, Nora
 from .config import ProactiveConfig, Settings
 from .humanize import typing_seconds
+from .persona import MORNING_OCCASION, NIGHT_OCCASION, REMINDER_OCCASION
 from .runtime import RuntimeControls
 from .tts import Speech, Speaker, pcm_48k_stereo
 from .vision import MAX_BYTES as MAX_IMAGE_BYTES
@@ -136,12 +140,19 @@ def _cue_in(phrase: str, text: str) -> bool:
 class NoraBot(commands.Bot):
     # how many times she may rewrite herself within one burst
     MAX_ADAPTATIONS = 2
-    def __init__(self, settings: Settings, nora: Nora):
+
+    def __init__(self, settings: Settings, nora: Nora, *, privileged: bool = True):
         intents = discord.Intents.default()
         # Privileged intent: enable it in the Developer Portal too.
         intents.message_content = True
         intents.dm_messages = True
         intents.reactions = True
+        # Reading his status needs presences + members, which are privileged
+        # as well. If the portal has them off, discord closes with 4014, so
+        # the caller may retry us without them.
+        self._track_owner = bool(privileged and settings.presence.track_owner)
+        intents.members = self._track_owner
+        intents.presences = self._track_owner
         super().__init__(command_prefix="!", intents=intents, help_command=None)
 
         self.settings = settings
@@ -157,8 +168,14 @@ class NoraBot(commands.Bot):
         self._locks: dict[int, asyncio.Lock] = {}
         self._voice_locks: dict[int, asyncio.Lock] = {}
         self._proactive_task: asyncio.Task[None] | None = None
+        self._reminder_task: asyncio.Task[None] | None = None
+        self._greeting_task: asyncio.Task[None] | None = None
         self._presence_task: asyncio.Task[None] | None = None
         self._presence_key: tuple[str, str] | None = None
+        self._owner_activity: str | None = None
+        # starting hours guessed from his message history, before she has
+        # heard him say good morning or goodnight enough times
+        self._greeting_seed: dict[str, float] | None = None
         self._stop_task: asyncio.Task[None] | None = None
         self._direct_channel: Any = None
         self._proactive_uid: int | None = None
@@ -212,6 +229,13 @@ class NoraBot(commands.Bot):
                 callback=self._cmd_status,
             )
         )
+        self.tree.add_command(
+            app_commands.Command(
+                name="reminders",
+                description="what she is going to remind you about",
+                callback=self._cmd_reminders,
+            )
+        )
         if self.settings.tts.enabled and self.settings.tts.voice_channel:
             self.tree.add_command(
                 app_commands.Command(
@@ -239,16 +263,36 @@ class NoraBot(commands.Bot):
             await self._apply_presence()
             if self.settings.presence.enabled:
                 self._presence_task = asyncio.create_task(self._presence_loop())
+            self._scan_owner_presence()
             # Icon first, so it is there while the model is still loading.
             self._start_tray()
             try:
-                await self.nora.server.ensure_running()
-                log.info("model warm and ready")
-            except Exception:
-                log.exception("model failed to start; will retry on first message")
+                await self.warm_model()
             finally:
                 self._start_proactive()
+                self._start_scheduler()
                 self._stop_task = asyncio.create_task(self._watch_stop_file())
+
+    async def warm_model(self) -> None:
+        """Start llama-server for local answers; OpenRouter needs no warmup."""
+        if self.settings.provider.mode == "openrouter":
+            log.info("provider is openrouter; local llama-server stays off")
+            return
+        try:
+            await self.nora.server.ensure_running()
+            log.info("model warm and ready")
+        except Exception:
+            log.exception("model failed to start; will retry on first message")
+
+    async def stop_local_model(self) -> None:
+        """Free the GPU when switching to hosted models."""
+        if self.settings.provider.mode != "openrouter":
+            return
+        try:
+            await self.nora.server.stop()
+            log.info("local llama-server stopped for OpenRouter")
+        except Exception:
+            log.warning("could not stop llama-server", exc_info=True)
 
     async def close(self) -> None:
         log.info("shutting down")
@@ -261,6 +305,9 @@ class NoraBot(commands.Bot):
             self._stop_task.cancel()
         if self._proactive_task is not None:
             self._proactive_task.cancel()
+        for task in (self._reminder_task, self._greeting_task):
+            if task is not None:
+                task.cancel()
         for task in list(self._timer_tasks.values()):
             task.cancel()
         for task in list(self._reaction_tasks):
@@ -291,6 +338,10 @@ class NoraBot(commands.Bot):
         if not self._user_allowed(message.author.id):
             log.debug("ignoring %s (not on allow_users)", message.author.id)
             return
+
+        # Cheap freshness check: his own messages carry his current presence.
+        if isinstance(message.author, discord.Member):
+            self._remember_activity(message.author)
 
         if audio:
             voice_lock = self._voice_locks.setdefault(
@@ -324,6 +375,10 @@ class NoraBot(commands.Bot):
             text = self._attachment_note(message)
         if not text and not images:
             return
+
+        # Silent on purpose: she just remembers, she does not answer yet.
+        self._remember_events(scope, text)
+        self._note_greeting(scope, text)
 
         voice_reply = (
             bool(audio)
@@ -820,6 +875,7 @@ class NoraBot(commands.Bot):
                         images=images or None,
                         label_speakers=getattr(channel, "guild", None) is not None,
                         adjust=adaptations > 0,
+                        doing=self._owner_doing(scope),
                     )
             except Exception:
                 log.exception("failed to generate a reply")
@@ -1124,6 +1180,46 @@ class NoraBot(commands.Bot):
                 log.exception("presence refresh failed")
             await asyncio.sleep(interval)
 
+    # -- what he is doing ------------------------------------------------
+    def _remember_activity(self, member: Any) -> None:
+        """Cache the owner's status. Nothing about anyone else is stored."""
+        if not self._track_owner or member is None:
+            return
+        owner = getattr(self.nora, "owner_id", None)
+        if owner is None or getattr(member, "id", None) != owner:
+            return
+        try:
+            line = activity_mod.describe_member(member)
+        except Exception:
+            log.debug("could not read his presence", exc_info=True)
+            return
+        if line != self._owner_activity:
+            self._owner_activity = line
+            log.info("he is now: %s", line or "unknown")
+
+    def _scan_owner_presence(self) -> None:
+        """Pick up his status once on login, before any update arrives."""
+        owner = getattr(self.nora, "owner_id", None)
+        if not self._track_owner or owner is None:
+            return
+        for guild in self.guilds:
+            member = guild.get_member(owner)
+            if member is not None:
+                self._remember_activity(member)
+                return
+
+    async def on_presence_update(self, before: Any, after: Any) -> None:
+        self._remember_activity(after)
+
+    def _owner_doing(self, scope: str) -> str | None:
+        """Only her owner's activity ever reaches a prompt."""
+        if not self._track_owner or not self._owner_activity:
+            return None
+        is_owner = getattr(self.nora, "is_owner", None)
+        if callable(is_owner) and not is_owner(scope):
+            return None
+        return self._owner_activity
+
     # -- texting first ---------------------------------------------------
     def _start_proactive(self) -> None:
         cfg = self.settings.proactive
@@ -1136,10 +1232,17 @@ class NoraBot(commands.Bot):
             log.info("proactive texting armed but paused")
         self._proactive_task = asyncio.create_task(self._proactive_loop())
 
+    def _target_uid(self) -> int | None:
+        """Who she DMs on her own: her owner, else proactive.user_id."""
+        owner = getattr(self.nora, "owner_id", None)
+        return owner or self.settings.proactive.user_id
+
     async def _proactive_channel(self) -> tuple[Any, str]:
         if self._direct_channel is not None:
             return self._direct_channel, f"u:{self._proactive_uid}"
-        uid = self.settings.proactive.user_id
+        uid = self._target_uid()
+        if not uid:
+            raise RuntimeError("no persona.owner_id or proactive.user_id configured")
         user = self.get_user(uid) or await self.fetch_user(uid)
         dm = user.dm_channel or await user.create_dm()
         self._direct_channel = dm
@@ -1299,7 +1402,10 @@ class NoraBot(commands.Bot):
         async with lock:
             try:
                 chunks = await self.nora.initiate(
-                    scope, follow_up=True, worry_level=worry_level
+                    scope,
+                    follow_up=True,
+                    worry_level=worry_level,
+                    doing=self._owner_doing(scope),
                 )
             except Exception:
                 log.exception("could not compose a follow up")
@@ -1323,7 +1429,9 @@ class NoraBot(commands.Bot):
         lock = self._locks.setdefault(channel.id, asyncio.Lock())
         async with lock:
             try:
-                chunks = await self.nora.initiate(scope)
+                chunks = await self.nora.initiate(
+                    scope, doing=self._owner_doing(scope)
+                )
             except Exception:
                 log.exception("could not compose a spontaneous text")
                 return False
@@ -1336,6 +1444,216 @@ class NoraBot(commands.Bot):
                 log.exception("failed to send a spontaneous text")
                 return False
             return True
+
+    # -- reminders and greetings -----------------------------------------
+    def _start_scheduler(self) -> None:
+        """Reminders and greetings have their own clock, not the proactive one."""
+        if self._target_uid() is None:
+            log.info(
+                "reminders and greetings need persona.owner_id or proactive.user_id"
+            )
+            return
+        if self.settings.reminders.enabled and (
+            self._reminder_task is None or self._reminder_task.done()
+        ):
+            self._reminder_task = asyncio.create_task(self._reminders_loop())
+        if self.settings.greetings.enabled and (
+            self._greeting_task is None or self._greeting_task.done()
+        ):
+            self._greeting_task = asyncio.create_task(self._greetings_loop())
+
+    def _remember_events(self, scope: str, text: str) -> None:
+        """Store whatever he just said about his week. She stays quiet for now."""
+        cfg = self.settings.reminders
+        if not cfg.enabled or not text:
+            return
+        # Only her owner gets scheduled texts, so only his events matter.
+        is_owner = getattr(self.nora, "is_owner", None)
+        if callable(is_owner) and not is_owner(scope):
+            return
+        try:
+            item = reminders_mod.remember(
+                self.nora.store_for(scope), text, datetime.now(), cfg
+            )
+        except Exception:
+            log.debug("could not read an event out of that", exc_info=True)
+            return
+        if item is not None:
+            log.info("noted %s at %s for %s", item.title, item.when, scope)
+
+    def _note_greeting(
+        self, scope: str, text: str, now: datetime | None = None
+    ) -> None:
+        """Learn when he says good morning and goodnight, and move her windows."""
+        cfg = self.settings.greetings
+        if not cfg.enabled or not text:
+            return
+        is_owner = getattr(self.nora, "is_owner", None)
+        if callable(is_owner) and not is_owner(scope):
+            return
+        store = self.nora.store_for(scope)
+        try:
+            noted = greetings_mod.note_user_greeting(store, text, now or datetime.now())
+        except Exception:
+            log.debug("could not read a greeting out of that", exc_info=True)
+            return
+        if noted is None:
+            return
+        kind, count = noted
+        profile = greetings_mod.load_profile(store)
+        log.info(
+            "he said %s (%d samples). windows: %s",
+            kind,
+            count,
+            greetings_mod.describe_windows(cfg, profile, self._greeting_seed),
+        )
+
+    async def _send_scheduled(
+        self,
+        channel: Any,
+        scope: str,
+        *,
+        kind: str,
+        note: str | None,
+        fallback: str,
+    ) -> bool:
+        """Compose and deliver one greeting or reminder, with a template fallback."""
+        lock = self._locks.setdefault(channel.id, asyncio.Lock())
+        async with lock:
+            try:
+                chunks = await self.nora.initiate(
+                    scope,
+                    occasion=kind,
+                    occasion_note=note,
+                    doing=self._owner_doing(scope),
+                )
+            except Exception:
+                log.exception("could not compose the %s text", kind)
+                chunks = []
+            if not chunks:
+                chunks = [fallback]
+            try:
+                await self._deliver(channel, chunks)
+            except Exception:
+                log.exception("failed to send the %s text", kind)
+                return False
+        log.info("sent the %s text", kind)
+        return True
+
+    async def _reminders_loop(self) -> None:
+        log.info("reminders armed")
+        while True:
+            try:
+                await asyncio.sleep(30)
+                await self._check_reminders()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.exception("reminder check failed")
+                await asyncio.sleep(60)
+
+    async def _check_reminders(self, now: datetime | None = None) -> bool:
+        """Send a reminder if one is due. True when something went out."""
+        now = now or datetime.now()
+        try:
+            channel, scope = await self._proactive_channel()
+        except Exception:
+            log.debug("no dm open yet; reminders wait")
+            return False
+        store = self.nora.store_for(scope)
+        items = reminders_mod.load(store)
+        if not items:
+            return False
+        kept = reminders_mod.prune(items, now)
+        if len(kept) != len(items):
+            reminders_mod.save(store, kept)
+        batch = reminders_mod.due(kept, now)
+        if not batch:
+            return False
+        if proactive_mod.in_quiet_hours(now, self.settings.proactive.quiet_hours):
+            log.info("a reminder is due but it is quiet hours")
+            return False
+        sent = await self._send_scheduled(
+            channel,
+            scope,
+            kind=REMINDER_OCCASION,
+            note=reminders_mod.describe_many(batch, now),
+            fallback=reminders_mod.reminder_text(batch, now),
+        )
+        if not sent:
+            return False
+        for item in batch:
+            item.notified_at = now.isoformat(timespec="seconds")
+        reminders_mod.save(store, kept)
+        return True
+
+    async def _greetings_loop(self) -> None:
+        log.info("greetings armed")
+        cfg = self.settings.greetings
+        uid = self._target_uid()
+        if uid is not None:
+            scope = f"u:{uid}"
+            store = self.nora.store_for(scope)
+            # Start from his actual sleep pattern in the transcript, so the
+            # windows are not stuck on the defaults for the first few days.
+            sleep_window = store.quiet_window(scope, hours=8)
+            self._greeting_seed = greetings_mod.seed_from_sleep_window(sleep_window)
+            log.info(
+                "greeting windows: %s",
+                greetings_mod.describe_windows(
+                    cfg, greetings_mod.load_profile(store), self._greeting_seed
+                ),
+            )
+        while True:
+            try:
+                await asyncio.sleep(45)
+                await self._maybe_greet()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.exception("greeting check failed")
+                await asyncio.sleep(60)
+
+    async def _maybe_greet(self, now: datetime | None = None) -> bool:
+        cfg = self.settings.greetings
+        now = now or datetime.now()
+        try:
+            channel, scope = await self._proactive_channel()
+        except Exception:
+            log.debug("no dm open yet; greetings wait")
+            return False
+        store = self.nora.store_for(scope)
+        sent_log = greetings_mod.load_sent(store)
+        profile = greetings_mod.load_profile(store)
+        if self._unanswered_streak(scope) >= self.settings.proactive.max_unanswered:
+            return False
+        kind = greetings_mod.due(
+            now,
+            cfg,
+            sent_log,
+            profile=profile,
+            seed=self._greeting_seed,
+            chatted_minutes=store.idle_minutes(scope),
+            roll=random.random(),
+        )
+        if kind is None:
+            return False
+        # No quiet-hours check here on purpose: the window itself is the
+        # schedule. If his bedtime is 02:30, a goodnight at 02:30 is the whole
+        # point, and proactive.quiet_hours would block exactly that.
+        occasion = (
+            MORNING_OCCASION if kind == greetings_mod.MORNING else NIGHT_OCCASION
+        )
+        ok = await self._send_scheduled(
+            channel,
+            scope,
+            kind=occasion,
+            note=None,
+            fallback=greetings_mod.fallback(kind),
+        )
+        if ok:
+            greetings_mod.mark(store, kind, now)
+        return ok
 
     # -- tray controls ---------------------------------------------------
     def _start_tray(self) -> None:
@@ -1382,10 +1700,21 @@ class NoraBot(commands.Bot):
 
     async def tray_status(self) -> dict[str, Any]:
         cfg = self.settings.proactive
-        try:
-            model_ready = await asyncio.wait_for(self.nora.server.healthy(), 2.0)
-        except Exception:
-            model_ready = False
+        provider = self.settings.provider
+        if provider.mode == "openrouter":
+            model_ready = bool(
+                (provider.openrouter.api_key or "").strip()
+                and (provider.openrouter.model or "").strip()
+            )
+            provider_model = provider.openrouter.model
+        else:
+            try:
+                model_ready = await asyncio.wait_for(
+                    self.nora.server.healthy(), 2.0
+                )
+            except Exception:
+                model_ready = False
+            provider_model = "llama.cpp"
 
         now = datetime.now()
         next_in = None
@@ -1396,6 +1725,8 @@ class NoraBot(commands.Bot):
         return {
             "ready": bool(self.user and self.is_ready()),
             "model_ready": bool(model_ready),
+            "provider": provider.mode,
+            "provider_model": provider_model,
             "proactive_enabled": bool(cfg.enabled),
             "preset": self.controls.preset_name(),
             "sent_today": self._sent_today,
@@ -1444,6 +1775,25 @@ class NoraBot(commands.Bot):
             ephemeral=True,
         )
 
+    async def _cmd_reminders(self, interaction: discord.Interaction) -> None:
+        scope = f"u:{interaction.user.id}"
+        now = datetime.now()
+        items = reminders_mod.pending(
+            reminders_mod.load(self.nora.store_for(scope)), now
+        )
+        if not items:
+            await interaction.response.send_message(
+                "nothing coming up ... tell me when something is", ephemeral=True
+            )
+            return
+        lines = [
+            f"`{item.title}` {reminders_mod.format_when(item.at, now)}"
+            for item in items[:12]
+        ]
+        await interaction.response.send_message(
+            "**reminders**\n" + "\n".join(lines), ephemeral=True
+        )
+
     async def _cmd_status(self, interaction: discord.Interaction) -> None:
         stats = self.nora.store_for(f"u:{interaction.user.id}").stats()
         try:
@@ -1471,5 +1821,16 @@ def run_bot(settings: Settings, nora: Nora) -> None:
         raise SystemExit(
             "No DISCORD_TOKEN found. Copy .env.example to .env and paste your bot token."
         )
-    bot = NoraBot(settings, nora)
-    bot.run(token, log_handler=None)
+    try:
+        NoraBot(settings, nora).run(token, log_handler=None)
+        return
+    except discord.PrivilegedIntentsRequired:
+        if not settings.presence.track_owner:
+            raise
+        log.error(
+            "Discord refused the presence intents (close code 4014). Enable "
+            "Presence and Server Members under Bot -> Privileged Gateway "
+            "Intents in the developer portal, or set presence.track_owner: false "
+            "in config.yaml. Starting again without presence tracking."
+        )
+    NoraBot(settings, nora, privileged=False).run(token, log_handler=None)

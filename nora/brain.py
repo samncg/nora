@@ -9,6 +9,7 @@ from typing import Any
 
 from . import consolidate as consolidate_mod
 from . import mood as mood_mod
+from . import reminders as reminders_mod
 from .academic import AcademicCalendar
 from .config import Settings
 from .humanize import estimate_tokens, split_messages
@@ -17,6 +18,7 @@ from .memory import MemoryStore
 from .persona import (
     FOLLOW_UP_CUE,
     FOLLOW_UP_WORRIED_CUE,
+    OCCASION_CUES,
     PROACTIVE_CUE,
     build_system_prompt,
 )
@@ -166,6 +168,7 @@ class Nora:
         images: list[bytes] | None = None,
         label_speakers: bool = False,
         adjust: bool = False,
+        doing: str | None = None,
     ) -> list[str]:
         """Work out what to say, without storing her side yet.
 
@@ -198,6 +201,7 @@ class Nora:
             attach_photo=bool(photo_urls),
             label_speakers=label_speakers,
             adjust=adjust,
+            doing=doing,
         )
         if photo_urls:
             messages[-1] = {
@@ -221,11 +225,24 @@ class Nora:
             self.maybe_consolidate(scope)
 
     async def initiate(
-        self, scope: str, *, follow_up: bool = False, worry_level: int = 1
+        self,
+        scope: str,
+        *,
+        follow_up: bool = False,
+        worry_level: int = 1,
+        occasion: str | None = None,
+        occasion_note: str | None = None,
+        doing: str | None = None,
     ) -> list[str]:
         """Start a conversation unprompted. Returns [] if the model has nothing."""
         messages = self.build_messages(
-            scope, proactive=True, follow_up=follow_up, worry_level=worry_level
+            scope,
+            proactive=True,
+            follow_up=follow_up,
+            worry_level=worry_level,
+            occasion=occasion,
+            occasion_note=occasion_note,
+            doing=doing,
         )
         raw = await self.client.chat(
             messages,
@@ -255,6 +272,9 @@ class Nora:
         follow_up: bool = False,
         worry_level: int = 1,
         adjust: bool = False,
+        doing: str | None = None,
+        occasion: str | None = None,
+        occasion_note: str | None = None,
     ) -> list[dict[str, Any]]:
         cfg = self.settings
         store = self.store_for(scope)
@@ -287,6 +307,12 @@ class Nora:
             )
             self._mood_cache[scope] = current_mood
 
+        events: list[str] = []
+        if cfg.reminders.enabled:
+            events = reminders_mod.upcoming(
+                reminders_mod.load(store), now, cfg.reminders.prompt_days
+            )
+
         system = build_system_prompt(
             cfg,
             facts=[
@@ -307,6 +333,10 @@ class Nora:
             routine=self._routine(scope),
             keep_alive=self._should_keep_alive(history, proactive=proactive),
             mood=current_mood.line if current_mood else None,
+            doing=doing if self.is_owner(scope) else None,
+            upcoming=events,
+            occasion=occasion,
+            occasion_note=occasion_note,
         )
 
         messages: list[dict[str, Any]] = [{"role": "system", "content": system}]
@@ -324,6 +354,8 @@ class Nora:
                 cue = (
                     FOLLOW_UP_WORRIED_CUE if worry_level >= 2 else FOLLOW_UP_CUE
                 )
+            elif occasion:
+                cue = OCCASION_CUES.get(occasion, PROACTIVE_CUE)
             else:
                 cue = PROACTIVE_CUE
             messages.append({"role": "user", "content": cue})
