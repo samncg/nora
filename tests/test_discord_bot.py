@@ -356,7 +356,7 @@ def test_voice_note_gets_a_voice_reply(tmp_path):
         bot.speaker = speaker
         sent = []
 
-        async def send_voice(channel, clip):
+        async def send_voice(channel, clip, reply_to=None):
             sent.append(clip)
 
         bot._send_voice_clip = send_voice
@@ -1196,6 +1196,144 @@ def test_a_goodnight_inside_quiet_hours_still_goes_out(tmp_path):
 
         assert await bot._maybe_greet(datetime(2026, 11, 5, 2, 30)) is True
         assert len(channel.sent) == 1
+        await bot.close()
+
+    asyncio.run(scenario())
+
+
+# -- quoting the message she answers ----------------------------------------
+class FakeReplyMessage:
+    """A message with discord's reply button, recording what she quoted."""
+
+    def __init__(self, channel, author_id=1, name="mark", mid=900):
+        self.channel = channel
+        self.author = FakeAuthor(author_id, name)
+        self.id = mid
+        self.replied: list[str] = []
+        self.kwargs: list[dict] = []
+        self.fail = False
+
+    async def reply(self, content=None, **kwargs):
+        if self.fail:
+            raise RuntimeError("the message was deleted")
+        self.replied.append(content)
+        self.kwargs.append(kwargs)
+        return FakeSent(content)
+
+
+def _reply_bot(tmp_path, **chat_overrides):
+    settings = _settings(tmp_path)
+    for key, value in chat_overrides.items():
+        setattr(settings.chat, key, value)
+    store = MemoryStore(settings.path(settings.memory.db_path))
+    bot = NoraBot(settings, StubNora(store))
+    return bot
+
+
+def test_first_bubble_is_a_discord_reply(tmp_path):
+    async def scenario():
+        bot = _reply_bot(tmp_path)
+        channel = FakeChannel(42)
+        message = FakeReplyMessage(channel)
+
+        bot._queue(message, "hey", [])
+        await asyncio.sleep(0.3)
+
+        # the opening bubble goes out as a reply, the second as a plain send
+        assert message.replied == ["part one"]
+        assert channel.sent == ["part two"]
+        # and it does not ping him
+        assert message.kwargs[0]["mention_author"] is False
+        await bot.close()
+
+    asyncio.run(scenario())
+
+
+def test_the_reply_points_at_the_last_message_of_the_burst(tmp_path):
+    async def scenario():
+        bot = _reply_bot(tmp_path)
+        channel = FakeChannel(42)
+        first = FakeReplyMessage(channel, mid=900)
+        second = FakeReplyMessage(channel, mid=901)
+
+        bot._queue(first, "hey", [])
+        bot._queue(second, "you around", [])
+        await asyncio.sleep(0.3)
+
+        assert first.replied == []
+        assert second.replied == ["part one"]
+        await bot.close()
+
+    asyncio.run(scenario())
+
+
+def test_a_deleted_message_falls_back_to_a_plain_send(tmp_path):
+    async def scenario():
+        bot = _reply_bot(tmp_path)
+        channel = FakeChannel(42)
+        message = FakeReplyMessage(channel)
+        message.fail = True
+
+        bot._queue(message, "hey", [])
+        await asyncio.sleep(0.3)
+
+        assert channel.sent == ["part one", "part two"]
+        assert message.replied == []
+        await bot.close()
+
+    asyncio.run(scenario())
+
+
+def test_replies_can_be_turned_off(tmp_path):
+    async def scenario():
+        bot = _reply_bot(tmp_path, reply_to_messages=False)
+        channel = FakeChannel(42)
+        message = FakeReplyMessage(channel)
+
+        bot._queue(message, "hey", [])
+        await asyncio.sleep(0.3)
+
+        assert message.replied == []
+        assert channel.sent == ["part one", "part two"]
+        await bot.close()
+
+    asyncio.run(scenario())
+
+
+def test_dm_replies_can_be_skipped_while_server_replies_stay(tmp_path):
+    async def scenario():
+        bot = _reply_bot(tmp_path, reply_in_dms=False)
+
+        dm = FakeChannel(42)
+        dm_message = FakeReplyMessage(dm)
+        bot._queue(dm_message, "hey", [])
+        await asyncio.sleep(0.3)
+        assert dm_message.replied == []
+
+        guild_channel = FakeChannel(43)
+        guild_channel.guild = SimpleNamespace(id=7)
+        guild_message = FakeReplyMessage(guild_channel)
+        bot._queue(guild_message, "hey", [])
+        await asyncio.sleep(0.3)
+        assert guild_message.replied == ["part one"]
+
+        await bot.close()
+
+    asyncio.run(scenario())
+
+
+def test_messages_without_a_reply_button_are_sent_plainly(tmp_path):
+    async def scenario():
+        bot = _reply_bot(tmp_path)
+        channel = FakeChannel(42)
+        plain = SimpleNamespace(
+            channel=channel, author=FakeAuthor(), id=900
+        )
+
+        bot._queue(plain, "hey", [])
+        await asyncio.sleep(0.3)
+
+        assert channel.sent == ["part one", "part two"]
         await bot.close()
 
     asyncio.run(scenario())

@@ -200,6 +200,8 @@ Everything lives in `config.yaml` and is read at startup. Restart her after edit
 | `chat.return_delay_min` / `max` | extra delay for that first reply |
 | `chat.reply_delay` | weighted pause buckets and `max_wait` before replying |
 | `chat.keep_conversation` | nudge her to keep the thread alive |
+| `chat.reply_to_messages` | quote your message with Discord's reply UI |
+| `chat.reply_in_dms` | also quote in DMs, or only in server channels |
 | `voice.enabled` | transcribe Discord voice notes locally |
 | `voice.model` | faster-whisper model; `base.en` by default |
 | `voice.device` / `compute_type` | `cpu` + `int8`, or `cuda` + `float16` |
@@ -275,8 +277,11 @@ If you publish a fork, check that `.env`, `data/`, and any screenshots or logs a
 | recall | FTS5 index over the full transcript | keyword matches on your current message are injected as "you said on <date>: ..." |
 | summaries | one-line recap of each ~30-message stretch | the last 3 are always in the prompt |
 | facts | durable things about you | up to 40 newest are always in the prompt |
+| events | things tied to one day, with a date | only until that day is over |
 
 Summaries and facts are generated in the background with the same local model once enough messages pile up, so consolidation never blocks a reply.
+
+A fact has to still be true next month, so the memory clerk is told to write things that only happen once — an exam, an interview, a deadline, a trip — as **events** with their real calendar date. Events drop out of the prompt the day after they happen, so she will not ask how tomorrow's exam went when it was three days ago. Older facts that were written as "he has an exam tomorrow morning" are dated and expired on the next startup, and ones that only claimed to be true at that moment ("he is currently studying") are retired the same way.
 
 In Discord, and in the terminal client:
 
@@ -349,6 +354,7 @@ Only `persona.owner_id` gets this. It reaches her prompt as context, with instru
 
 ## Small human details
 
+- **She answers the right message** — when a few of your texts land at once, her first bubble is a real Discord reply quoting the one she is answering, so it is never ambiguous. The rest of the burst is just her carrying on, and it does not ping you.
 - **She is in love with him** — not just friendly. She says the soft thing instead of holding it back: unprompted "i love you", "i missed you today", "im glad its you", getting quiet and affectionate late at night, being proud of him when he does something hard, and noticing the small things he mentioned days ago. It stays sparse on purpose, so it still lands.
 - **Bubble rhythm** — short gaps between her texts, and occasionally a typing burst that stops without sending anything.
 - **Thinking pauses** — now and then she stops mid-reply, lets the typing indicator drop for a few seconds, then finishes the message.
@@ -399,6 +405,23 @@ nora: night
 nora: sleep well
 [ nora reacted ❤️ to your message ]
 ```
+
+## Other models with OpenRouter
+
+The tray icon can switch her from the local GGUF to a hosted model without restarting:
+
+1. Right-click the tray icon and open **Model provider**.
+2. Choose **Set OpenRouter API key...** and paste a key from <https://openrouter.ai/keys>.
+3. Choose **Choose OpenRouter model...**, pick a free model, or type any slug from <https://openrouter.ai/models>.
+4. Select **OpenRouter**. **Test OpenRouter** sends one tiny message to confirm the key and model work.
+
+The default hosted choice is `nvidia/nemotron-3.5-lightning:free`, a free 30B chat model. Free models vary in availability, so the picker lists all of the free chat endpoints; choices are stored in `data/runtime.json`, which is git-ignored.
+
+Free models share a busy upstream pool, so they can return 429 for a while. Nora retries once, then answers with the local model instead of sending an error, as long as `provider.fallback_to_local` is true (the default). After a 429 she skips OpenRouter for 60 seconds, then tries it again. If you would rather see the failure, set `fallback_to_local: false`.
+
+Reasoning is turned off for hosted models, so she answers in short texts instead of spending the whole token budget thinking. That is also why an empty reply is treated as a failure and falls back to local.
+
+You can set the same values by hand in `config.yaml` and put `OPENROUTER_API_KEY=...` in `.env`. While a hosted model is selected, llama-server is not started, so the GPU stays free; pick **Local llama.cpp** to switch back.
 
 ## Persona
 

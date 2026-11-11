@@ -10,9 +10,11 @@ import logging
 import re
 import sqlite3
 import threading
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterable
+
+from . import dates
 
 log = logging.getLogger("nora.memory")
 
@@ -27,6 +29,8 @@ CREATE TABLE IF NOT EXISTS facts (
     source_id    INTEGER,
     created_at   TEXT    NOT NULL,
     last_seen_at TEXT    NOT NULL,
+    -- events only: the day it happens, so they can stop being true
+    event_on     TEXT,
     UNIQUE(scope, normalized)
 );
 """
@@ -104,6 +108,13 @@ def normalize_fact(text: str) -> str:
     return " ".join(cleaned.split())
 
 
+def _base_date(stamp: str | None) -> date:
+    try:
+        return date.fromisoformat(str(stamp)[:10])
+    except (TypeError, ValueError):
+        return date.today()
+
+
 class MemoryStore:
     """A tiny, thread-safe wrapper around the Nora database."""
 
@@ -117,8 +128,10 @@ class MemoryStore:
             self._db.executescript(SCHEMA)
             self._db.executescript(FACTS_TABLE)
             self._migrate(legacy_scope)
+            self._migrate_event_on()
             self._db.execute(FACTS_INDEX)
             self._db.commit()
+        self.maintain_facts()
 
     # -- lifecycle -------------------------------------------------------
     def close(self) -> None:
@@ -176,6 +189,15 @@ class MemoryStore:
                 ),
             )
         self._db.execute("DROP TABLE facts_legacy")
+
+    def _migrate_event_on(self) -> None:
+        """Databases created before events had dates need the new column."""
+        columns = {row["name"] for row in self._db.execute("PRAGMA table_info(facts)")}
+        if "event_on" in columns:
+            return
+        log.info("adding event_on to facts")
+        self._db.execute("ALTER TABLE facts ADD COLUMN event_on TEXT")
+        self._db.commit()
 
     def _migrate_dm_scopes(self) -> None:
         """Old `dm:<channel>` threads become `u:<person>` threads."""
@@ -409,6 +431,7 @@ class MemoryStore:
         *,
         kind: str = "fact",
         source_id: int | None = None,
+        event_on: str | date | None = None,
     ) -> bool:
         content = " ".join(content.strip().split())
         if len(content) < 4:
@@ -416,27 +439,93 @@ class MemoryStore:
         normalized = normalize_fact(content)
         if not normalized:
             return False
+        when = str(event_on)[:10] if event_on else None
         now = _now()
         with self._lock:
             cur = self._db.execute(
                 "INSERT INTO facts (scope, normalized, content, kind, source_id,"
-                " created_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
+                " event_on, created_at, last_seen_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
                 " ON CONFLICT(scope, normalized) DO UPDATE SET"
                 "   last_seen_at = excluded.last_seen_at,"
-                "   salience = MIN(facts.salience + 0.35, 5.0)",
-                (scope, normalized, content, kind, source_id, now, now),
+                "   salience = MIN(facts.salience + 0.35, 5.0),"
+                "   kind = excluded.kind,"
+                "   event_on = COALESCE(excluded.event_on, facts.event_on)",
+                (scope, normalized, content, kind, source_id, when, now, now),
             )
             self._db.commit()
             return cur.rowcount > 0
 
-    def facts(self, scope: str, limit: int = 40) -> list[dict[str, Any]]:
+    def facts(
+        self, scope: str, limit: int = 40, *, today: date | None = None
+    ) -> list[dict[str, Any]]:
+        """Current facts, newest first. Events stop counting once the day passes."""
+        cutoff = (today or date.today()).isoformat()
         with self._lock:
             rows = self._db.execute(
                 "SELECT * FROM facts WHERE scope = ?"
+                " AND (event_on IS NULL OR event_on >= ?)"
                 " ORDER BY last_seen_at DESC, id DESC LIMIT ?",
-                (scope, limit),
+                (scope, cutoff, limit),
             ).fetchall()
         return [dict(r) for r in rows]
+
+    def reclassify_dated_facts(self) -> int:
+        """Turn old facts that describe a moment into expiring events.
+
+        Earlier versions wrote `he has an exam tomorrow morning` or `he is
+        currently studying` as plain facts, which then got repeated forever.
+        This dates those rows so they stop being injected once the moment is
+        over. Safe to run repeatedly.
+        """
+        changed = 0
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT id, content, created_at FROM facts"
+                " WHERE kind = 'fact' AND event_on IS NULL"
+            ).fetchall()
+            for row in rows:
+                base = _base_date(row["created_at"])
+                resolved = dates.resolve(row["content"], base=base)
+                if resolved is not None:
+                    content, when = resolved
+                elif dates.is_transient(row["content"]):
+                    # no date, but it claimed to be true right now
+                    content, when = row["content"], base
+                else:
+                    continue
+                # OR IGNORE: the rewritten text may collide with another row
+                self._db.execute(
+                    "UPDATE OR IGNORE facts SET content = ?, normalized = ?,"
+                    " kind = 'event', event_on = ? WHERE id = ?",
+                    (content, normalize_fact(content), when.isoformat(), row["id"]),
+                )
+                changed += 1
+            if changed:
+                self._db.commit()
+        if changed:
+            log.info("dated %d old facts so they expire", changed)
+        return changed
+
+    def prune_events(self, *, today: date | None = None, days: int = 14) -> int:
+        """Drop events that finished long ago; they are dead weight."""
+        cutoff = ((today or date.today()) - timedelta(days=max(0, days))).isoformat()
+        with self._lock:
+            cur = self._db.execute(
+                "DELETE FROM facts WHERE kind = 'event' AND event_on IS NOT NULL"
+                " AND event_on < ?",
+                (cutoff,),
+            )
+            self._db.commit()
+            return cur.rowcount
+
+    def maintain_facts(self) -> None:
+        """Keep dated facts honest every time a memory file is opened."""
+        try:
+            self.reclassify_dated_facts()
+            self.prune_events()
+        except Exception:
+            log.warning("could not tidy the facts", exc_info=True)
 
     def forget_fact(self, fact_id: int, scope: str | None = None) -> bool:
         with self._lock:

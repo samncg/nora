@@ -29,8 +29,18 @@ def test_consolidation_prompt_only_records_stated_facts():
     assert "do not present nora's suggestions as plans" in SYSTEM_PROMPT
 
 
+def test_consolidation_prompt_keeps_facts_durable():
+    from nora.consolidate import SYSTEM_PROMPT
+
+    # one-off things are events with a date, not facts that live forever
+    assert "event: <YYYY-MM-DD>" in SYSTEM_PROMPT
+    assert "still be true next month" in SYSTEM_PROMPT
+    assert "never write \"tomorrow\"" in SYSTEM_PROMPT
+    assert "birthdays and anniversaries are facts" in SYSTEM_PROMPT
+
+
 def test_parse_output_from_lines():
-    summary, facts = parse_output(
+    summary, facts, events = parse_output(
         "summary: he survived week one\n"
         "fact: he works at a warehouse\n"
         "- fact: his manager talks fast\n"
@@ -38,10 +48,27 @@ def test_parse_output_from_lines():
     )
     assert summary == "he survived week one"
     assert facts == ["he works at a warehouse", "his manager talks fast"]
+    assert events == []
+
+
+def test_parse_output_reads_dated_events():
+    _, facts, events = parse_output(
+        "fact: he studies computer science\n"
+        "event: 2026-11-09 | final exam at 2pm\n"
+        "event: 2026-11-12 driving test\n"
+        "event: no date here\n"
+        "event: 2026-13-40 | impossible date\n"
+    )
+
+    assert facts == ["he studies computer science"]
+    assert events == [
+        ("final exam at 2pm", "2026-11-09"),
+        ("driving test", "2026-11-12"),
+    ]
 
 
 def test_parse_output_rejects_short_facts():
-    _, facts = parse_output("fact: hi")
+    _, facts, _ = parse_output("fact: hi")
     assert facts == []
 
 
@@ -600,3 +627,39 @@ def test_greeting_occasions_have_blocks():
 
     assert greetings.MORNING in OCCASION_BLOCKS
     assert greetings.NIGHT in OCCASION_BLOCKS
+
+
+def test_consolidate_stores_events_with_a_date(tmp_path):
+    from datetime import date
+
+    store = MemoryStore(tmp_path / "n.db")
+    for i in range(10):
+        store.add_message("u:1", "user", f"message number {i}")
+    client = FakeClient(
+        "summary: they talked about his week\n"
+        "fact: he studies computer science\n"
+        "event: 2099-11-09 | final exam at 2pm"
+    )
+
+    asyncio.run(consolidate(store, client, "u:1", batch=10))
+
+    rows = store.facts("u:1", today=date(2099, 1, 1))
+    event = next(r for r in rows if r["kind"] == "event")
+    assert event["event_on"] == "2099-11-09"
+    assert event["content"] == "final exam at 2pm"
+
+    fact = next(r for r in rows if r["kind"] == "fact")
+    assert fact["event_on"] is None
+
+
+def test_consolidate_drops_events_that_already_happened(tmp_path):
+    from datetime import date
+
+    store = MemoryStore(tmp_path / "n.db")
+    for i in range(10):
+        store.add_message("u:1", "user", f"message number {i}")
+    client = FakeClient("summary: his old exam\nevent: 2020-01-01 | old exam")
+
+    asyncio.run(consolidate(store, client, "u:1", batch=10))
+
+    assert all(r["kind"] != "event" for r in store.facts("u:1", today=date(2020, 1, 1)))

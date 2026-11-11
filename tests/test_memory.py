@@ -220,7 +220,9 @@ def test_routine_reaches_the_prompt(tmp_path):
     for hour in list(range(8, 24)) + [0]:
         for _ in range(3):
             _insert_at(local, "u:5", hour)
-    local.add_message("u:5", "user", "hey")
+    # timestamped too: add_message() would use the wall clock, which can land
+    # inside the quiet window and move it, making this test time-of-day flaky
+    _insert_at(local, "u:5", 12, "hey")
 
     system = Nora(settings, store=local).build_messages("u:5")[0]["content"]
     assert "his routine" in system
@@ -274,3 +276,115 @@ def test_old_dm_threads_become_per_person(tmp_path):
         assert reopened.recent("dm:555", 10) == []
     finally:
         reopened.close()
+
+
+# -- dated facts -----------------------------------------------------------
+def _insert_fact(store, content, created_at, scope="u:1"):
+    store._db.execute(
+        "INSERT INTO facts (scope, normalized, content, kind, created_at, last_seen_at)"
+        " VALUES (?, ?, ?, 'fact', ?, ?)",
+        (scope, normalize_fact(content), content, created_at, created_at),
+    )
+    store._db.commit()
+
+
+def test_an_event_stops_counting_after_its_day(store):
+    from datetime import date
+
+    store.add_fact("u:1", "he has an algebra exam", kind="event", event_on="2026-11-05")
+    store.add_fact("u:1", "he studies physics")
+
+    before = [r["content"] for r in store.facts("u:1", today=date(2026, 11, 5))]
+    after = [r["content"] for r in store.facts("u:1", today=date(2026, 11, 6))]
+
+    assert "he has an algebra exam" in before
+    assert "he has an algebra exam" not in after
+    assert "he studies physics" in after
+
+
+def test_old_relative_facts_become_events(store):
+    from datetime import date
+
+    _insert_fact(store, "ncg has an exam tomorrow morning.", "2026-11-03T10:00:00")
+
+    assert store.reclassify_dated_facts() == 1
+
+    row = store._db.execute("SELECT kind, event_on, content FROM facts").fetchone()
+    assert row["kind"] == "event"
+    assert row["event_on"] == "2026-11-04"
+    # the wording is rewritten so the stored text is not a lie later on
+    assert "2026-11-04" in row["content"]
+    assert "tomorrow" not in row["content"]
+    assert store.facts("u:1", today=date(2026, 11, 6)) == []
+
+
+def test_old_facts_with_a_written_date_become_events(store):
+    _insert_fact(
+        store,
+        "ncg has an exam scheduled for 2pm on November 5th.",
+        "2026-11-03T10:00:00",
+    )
+
+    assert store.reclassify_dated_facts() == 1
+
+    row = store._db.execute("SELECT kind, event_on FROM facts").fetchone()
+    assert (row["kind"], row["event_on"]) == ("event", "2026-11-05")
+
+
+def test_reclassifying_leaves_durable_facts_alone(store):
+    store.add_fact("u:1", "he studies computer science")
+    store.add_fact("u:1", "his birthday is on 3 march")
+
+    assert store.reclassify_dated_facts() == 0
+    assert len(store.facts("u:1")) == 2
+
+
+def test_reclassifying_is_idempotent(store):
+    _insert_fact(store, "ncg has an exam tomorrow morning.", "2026-11-03T10:00:00")
+
+    assert store.reclassify_dated_facts() == 1
+    assert store.reclassify_dated_facts() == 0
+
+
+def test_opening_the_file_tidies_the_old_facts(tmp_path):
+    path = tmp_path / "n.db"
+    first = MemoryStore(path)
+    _insert_fact(first, "ncg has an exam tomorrow morning.", "2026-11-03T10:00:00")
+    first.close()
+
+    second = MemoryStore(path)
+    try:
+        row = second._db.execute("SELECT kind, event_on FROM facts").fetchone()
+        assert (row["kind"], row["event_on"]) == ("event", "2026-11-04")
+    finally:
+        second.close()
+
+
+def test_finished_events_are_pruned(store):
+    from datetime import date
+
+    store.add_fact("u:1", "old exam", kind="event", event_on="2026-10-01")
+    store.add_fact("u:1", "new exam", kind="event", event_on="2026-11-20")
+
+    assert store.prune_events(today=date(2026, 11, 6)) == 1
+    assert [
+        r["content"] for r in store.facts("u:1", today=date(2026, 11, 6))
+    ] == ["new exam"]
+
+
+def test_a_present_tense_state_stops_being_a_fact(store):
+    _insert_fact(store, "ncg is currently studying for exams", "2026-11-03T10:00:00")
+
+    assert store.reclassify_dated_facts() == 1
+
+    row = store._db.execute("SELECT kind, event_on FROM facts").fetchone()
+    assert (row["kind"], row["event_on"]) == ("event", "2026-11-03")
+    assert store.facts("u:1") == []
+
+
+def test_transient_wording_is_recognised():
+    from nora import dates
+
+    assert dates.is_transient("he is currently studying") is True
+    assert dates.is_transient("he is at work right now") is True
+    assert dates.is_transient("he studies computer science") is False

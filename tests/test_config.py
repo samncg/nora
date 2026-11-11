@@ -225,3 +225,9 @@ def test_proactive_is_pointed_at_the_owner():
     settings = config.load()
     assert settings.proactive.user_id == settings.persona.owner_id
     assert settings.proactive.enabled is True
+
+
+def test_reply_config_parses():
+    settings = config.load()
+    assert settings.chat.reply_to_messages is True
+    assert settings.chat.reply_in_dms is True

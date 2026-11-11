@@ -12,7 +12,7 @@ import re
 import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 import discord
 import httpx
@@ -40,7 +40,19 @@ log = logging.getLogger("nora.discord")
 _MENTION_RE = re.compile(r"<@[!&]?\d+>")
 _SPACE_RE = re.compile(r"[ \t]{2,}")
 
-Pending = list[tuple[str, int | None, str | None, list[bytes], bool]]
+class PendingEntry(NamedTuple):
+    """One queued message from him, plus the discord message it came from."""
+
+    text: str
+    author_id: Any
+    author_name: str | None
+    images: list[bytes]
+    voice: bool
+    # Kept so her first bubble can be a real discord reply to it.
+    message: Any = None
+
+
+Pending = list[PendingEntry]
 
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}
 AUDIO_SUFFIXES = {".ogg", ".opus", ".mp3", ".m4a", ".wav", ".webm", ".flac", ".aac"}
@@ -613,11 +625,13 @@ class NoraBot(commands.Bot):
             return None
         return voice_channel
 
-    async def _send_voice_clip(self, channel: Any, speech: Speech) -> None:
+    async def _send_voice_clip(
+        self, channel: Any, speech: Speech, reply_to: Any | None = None
+    ) -> None:
         token = self.settings.discord.token
         if not token:
             raise RuntimeError("DISCORD_TOKEN is missing")
-        payload = {
+        payload: dict[str, Any] = {
             "flags": discord.MessageFlags.voice.flag,
             "attachments": [
                 {
@@ -628,6 +642,11 @@ class NoraBot(commands.Bot):
                 }
             ],
         }
+        if reply_to is not None and getattr(reply_to, "id", None) is not None:
+            payload["message_reference"] = {
+                "message_id": str(reply_to.id),
+                "fail_if_not_exists": False,
+            }
         url = f"https://discord.com/api/v10/channels/{channel.id}/messages"
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
@@ -796,7 +815,14 @@ class NoraBot(commands.Bot):
             # start of a burst: her think time is counted from here
             self._pending_since[cid] = time.monotonic()
         self._pending.setdefault(cid, []).append(
-            (text, message.author.id, message.author.display_name, images, voice)
+            PendingEntry(
+                text=text,
+                author_id=message.author.id,
+                author_name=message.author.display_name,
+                images=images,
+                voice=voice,
+                message=message,
+            )
         )
         # A version token lets a newer message supersede the pending timer
         # without cancelling a reply that is already being generated.
@@ -895,9 +921,13 @@ class NoraBot(commands.Bot):
                 text, images, voice_reply = self._merge_entries(
                     newer, images, voice_reply
                 )
+                entries = newer
                 log.info("he kept typing, adjusting her reply (%s)", scope)
                 await self._rethink_pause()
                 continue
+
+            # the newest message of the burst is the one she answers
+            reply_to = self._reply_target(channel, entries)
 
             if voice_reply and chunks:
                 speech = await asyncio.to_thread(
@@ -911,6 +941,7 @@ class NoraBot(commands.Bot):
                             text, images, voice_reply = self._merge_entries(
                                 newer, images, voice_reply
                             )
+                            entries = newer
                             await self._rethink_pause()
                             continue
                         break
@@ -920,7 +951,9 @@ class NoraBot(commands.Bot):
                             await self._play_in_call(speech)
                         else:
                             async with channel.typing():
-                                await self._send_voice_clip(channel, speech)
+                                await self._send_voice_clip(
+                                    channel, speech, reply_to=reply_to
+                                )
                         delivered.extend(chunks)
                         break
                     except Exception:
@@ -943,7 +976,10 @@ class NoraBot(commands.Bot):
                 await self._maybe_tease_typing(channel)
                 try:
                     sent, final_text = await self._send_bubble(
-                        channel, chunk, pace=pace
+                        channel,
+                        chunk,
+                        pace=pace,
+                        reply_to=reply_to if sent_bubbles == 0 else None,
                     )
                     delivered.append(final_text)
                 except Exception:
@@ -962,6 +998,7 @@ class NoraBot(commands.Bot):
             text, images, voice_reply = self._merge_entries(
                 newer, images, voice_reply
             )
+            entries = newer
             log.info("he talked over her, dropping the rest of the burst")
             await self._rethink_pause()
 
@@ -1025,6 +1062,34 @@ class NoraBot(commands.Bot):
         self._pending[cid] = [e for e in pending if e[1] != author_id]
         return mine
 
+    def _reply_target(self, channel: Any, entries: Pending) -> Any | None:
+        """The message her first bubble should quote, if replies are wanted.
+
+        Only her opening bubble carries the reference; the rest of the burst is
+        just her carrying on, the way a person uses the reply button once.
+        """
+        cfg = self.settings.chat
+        if not cfg.reply_to_messages or not entries:
+            return None
+        if getattr(channel, "guild", None) is None and not cfg.reply_in_dms:
+            return None
+        source = entries[-1].message
+        if source is None or not callable(getattr(source, "reply", None)):
+            return None
+        return source
+
+    async def _post(
+        self, channel: Any, chunk: str, reply_to: Any | None = None
+    ) -> Any:
+        """Send one bubble, quoting his message when a reply is available."""
+        if reply_to is not None and callable(getattr(reply_to, "reply", None)):
+            try:
+                return await reply_to.reply(chunk, mention_author=False)
+            except Exception:
+                # The message may be deleted by now; a plain send still works.
+                log.debug("could not quote his message; sending it plainly", exc_info=True)
+        return await channel.send(chunk)
+
     def _bubble_gap(self) -> float:
         cfg = self.settings.chat
         low = max(0.0, float(cfg.bubble_gap_min))
@@ -1069,11 +1134,16 @@ class NoraBot(commands.Bot):
         return text, None
 
     async def _send_bubble(
-        self, channel: Any, chunk: str, *, pace: float = 1.0
+        self,
+        channel: Any,
+        chunk: str,
+        *,
+        pace: float = 1.0,
+        reply_to: Any | None = None,
     ) -> tuple[Any, str]:
         """Send one bubble, with an optional quick correction edit."""
         send_text, correction = self._typo_variant(chunk)
-        sent = await self._send_chunk(channel, send_text, pace=pace)
+        sent = await self._send_chunk(channel, send_text, pace=pace, reply_to=reply_to)
         if correction and sent is not None:
             delay = random.uniform(
                 self.settings.chat.self_correct_delay_min,
@@ -1098,7 +1168,12 @@ class NoraBot(commands.Bot):
         return random.uniform(low, high)
 
     async def _send_chunk(
-        self, channel: Any, chunk: str, *, pace: float = 1.0
+        self,
+        channel: Any,
+        chunk: str,
+        *,
+        pace: float = 1.0,
+        reply_to: Any | None = None,
     ) -> Any | None:
         cfg = self.settings.chat
         delay = typing_seconds(
@@ -1112,7 +1187,7 @@ class NoraBot(commands.Bot):
         if pause <= 0:
             async with channel.typing():
                 await asyncio.sleep(delay)
-                return await channel.send(chunk)
+                return await self._post(channel, chunk, reply_to)
 
         # Type for a bit, let the indicator drop while she thinks, then finish.
         typed = delay * random.uniform(0.3, 0.7)
@@ -1122,7 +1197,7 @@ class NoraBot(commands.Bot):
         await asyncio.sleep(pause)
         async with channel.typing():
             await asyncio.sleep(max(0.05, delay - typed))
-            return await channel.send(chunk)
+            return await self._post(channel, chunk, reply_to)
 
     async def _deliver(self, channel: Any, chunks: list[str]) -> None:
         """Type for roughly as long as each bubble is, then send it."""

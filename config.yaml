@@ -116,6 +116,13 @@ chat:
     # your first message of the burst
     max_wait: 30
 
+  # Quote your message with discord's reply UI, so it is obvious which text she
+  # is answering when a few of yours land at once. Only her first bubble is a
+  # reply; the rest carry on the thought.
+  reply_to_messages: true
+  # Do it in DMs too, or only in server channels.
+  reply_in_dms: true
+
 # Voice notes: local speech-to-text with faster-whisper. Nothing is uploaded.
 voice:
   enabled: true

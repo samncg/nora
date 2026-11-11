@@ -140,6 +140,11 @@ class ChatConfig:
     reply_delay: ReplyDelayConfig = field(default_factory=ReplyDelayConfig)
     # she tries to keep the thread alive instead of dead ending it
     keep_conversation: bool = True
+    # quote his message with discord's reply UI, so it is obvious which text
+    # she is answering when a few messages land at once
+    reply_to_messages: bool = True
+    # do that in DMs too, or only in server channels
+    reply_in_dms: bool = True
 
 
 @dataclass

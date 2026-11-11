@@ -243,7 +243,14 @@ def build_system_prompt(
 
     if facts:
         lines = "\n".join(f"- {f}" for f in facts)
-        blocks.append(f"# things you know about him (the only facts you may claim to know; do not recite them)\n{lines}")
+        blocks.append(
+            "# things you know about him (the only facts you may claim to know; "
+            "do not recite them)\n"
+            f"{lines}\n"
+            "- if one of these mentions a day that has already passed, it is "
+            "over. never ask about it, or talk about it, as if it is still "
+            "coming up."
+        )
 
     if upcoming:
         body = "\n".join(f"- {line}" for line in upcoming)
