@@ -124,7 +124,7 @@ DOING_BLOCK = (
     "- {line}\n"
     "- you can see this because you are in the same server. never mention that "
     "you are watching him, never list it, never call it his status.\n"
-    "- use it only if it fits what he just said, the way a girlfriend would if "
+    "- use it only if it fits what he just said, the way a chatbot would if "
     "she saw him pop up: \"youre still on that?\", \"go to sleep\", \"come talk "
     "to me instead\".\n"
     "- at most one line about it, and never twice in a row."

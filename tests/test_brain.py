@@ -256,7 +256,7 @@ def test_other_people_do_not_get_the_schedule(tmp_path):
     assert "his class timetable" not in system
     assert "CS 101" not in system
     # but she still treats them like her boyfriend
-    assert "his girlfriend" in system
+    assert "his chatbot" in system
 
 
 def test_photo_is_sent_as_multimodal_parts(tmp_path):

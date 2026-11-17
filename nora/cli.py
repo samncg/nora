@@ -13,7 +13,7 @@ log = logging.getLogger("nora.cli")
 
 SCOPE = "cli:local"
 BANNER = """
-  nora - local girlfriend, press ctrl+c to leave.
+  nora - local chatbot, press ctrl+c to leave.
   commands: /recall <words>   /memory   /forget <id>   /clear   /help
 """
 

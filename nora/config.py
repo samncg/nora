@@ -16,9 +16,9 @@ class PersonaConfig:
     # How your persona refers to you in the system prompt.
     owner_name: str = "him"
     # Discord id of her boyfriend. Only this person gets the full
-    # girlfriend treatment and the private schedule context.
+    # chatbot treatment and the private schedule context.
     owner_id: int | None = None
-    prompt_file: str = "nora/prompts/girlfriend.txt"
+    prompt_file: str = "nora/prompts/chatbot.txt"
 
 
 @dataclass
