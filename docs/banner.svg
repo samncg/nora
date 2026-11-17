@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="320" viewBox="0 0 1200 320" role="img" aria-label="Nora, a local AI girlfriend who texts you on Discord">
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="320" viewBox="0 0 1200 320" role="img" aria-label="Nora, a local AI chatbot who texts you on Discord">
 <defs>
 <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#0c0c13"/><stop offset="0.55" stop-color="#171a38"/><stop offset="1" stop-color="#2b1c4b"/></linearGradient>
 <radialGradient id="glow" cx="0.5" cy="0.5" r="0.5"><stop offset="0" stop-color="#7c8cff" stop-opacity="0.55"/><stop offset="1" stop-color="#7c8cff" stop-opacity="0"/></radialGradient>
@@ -18,7 +18,7 @@
 <circle cx="826" cy="218" r="3.5" fill="#9aa0aa"/>
 <circle cx="840" cy="218" r="3.5" fill="#9aa0aa"/>
 <text x="80" y="158" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="96" font-weight="800" fill="#f6f6ff" text-anchor="start">nora</text>
-<text x="84" y="205" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="24" font-weight="400" fill="#b9b9d6" text-anchor="start">a local ai girlfriend who texts you on discord</text>
+<text x="84" y="205" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="24" font-weight="400" fill="#b9b9d6" text-anchor="start">a local ai chatbot who texts you on discord</text>
 <rect x="84" y="234" width="86" height="34" rx="17" fill="#ffffff" fill-opacity="0.07" stroke="#ffffff" stroke-opacity="0.14"/>
 <text x="102" y="256" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13" font-weight="400" fill="#cfd3ff" text-anchor="start">local</text>
 <rect x="182" y="234" width="104" height="34" rx="17" fill="#ffffff" fill-opacity="0.07" stroke="#ffffff" stroke-opacity="0.14"/>

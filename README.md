@@ -5,10 +5,10 @@
 [![Inference](https://img.shields.io/badge/inference-100%25%20local-2ea44f)](#memory-and-privacy)
 
 <p align="center">
-  <img src="docs/banner.svg" alt="Nora — a local AI girlfriend who texts you on Discord" width="900">
+  <img src="docs/banner.svg" alt="Nora — a local AI chatbot who texts you on Discord" width="900">
 </p>
 
-A local, self-hosted AI girlfriend who texts you on Discord.
+A local, self-hosted AI chatbot who texts you on Discord.
 
 She runs a 4-bit **Gemma E4B** GGUF in [llama.cpp](https://github.com/ggml-org/llama.cpp) on your own machine, texts in short lowercase bursts like a real person, remembers what you tell her, and can start conversations on her own. Everything stays on your PC except the Discord messages themselves.
 
@@ -298,7 +298,7 @@ In Discord, and in the terminal client:
 
 ## One owner, everyone separate
 
-Anyone who DMs her, or mentions her in a server, gets the girlfriend treatment. Her voice is the same for everyone, but each Discord user id gets a completely separate SQLite file. Transcripts, facts, summaries, and recall never cross between people.
+Anyone who DMs her, or mentions her in a server, gets the chatbot treatment. Her voice is the same for everyone, but each Discord user id gets a completely separate SQLite file. Transcripts, facts, summaries, and recall never cross between people.
 
 The exception is your schedule: `timetable.yaml` and `calendar.yaml` belong to `persona.owner_id`. Only that person's prompts include them, because it is not anyone else's timetable.
 
@@ -317,7 +317,7 @@ nora: oh god good luck
 nora: hey, your exam is at 2pm today. dont forget. good luck
 ```
 
-The warning time is not fixed: each event gets its own lead, drawn at random from `lead_minutes ± lead_jitter_minutes` (10–50 minutes by default). A reminder that always arrives at exactly T-30 looks like a calendar alarm, not a girlfriend who happened to think of you. It is picked once when you tell her, so it will not drift if the bot restarts.
+The warning time is not fixed: each event gets its own lead, drawn at random from `lead_minutes ± lead_jitter_minutes` (10–50 minutes by default). A reminder that always arrives at exactly T-30 looks like a calendar alarm, not a chatbot who happened to think of you. It is picked once when you tell her, so it will not drift if the bot restarts.
 
 The date is read with plain regex, not the model, because a missed date means no reminder. She understands `today`, `tonight`, `tomorrow` / `tmr` / `tmrw`, weekday names, `in 2 hours`, `2pm`, `14:00`, `at 3`, and `morning` / `noon` / `evening` / `night`. With no day she assumes the next time that hour comes around; with no time she assumes `reminders.default_hour`. Restating the same event updates it instead of reminding you twice, and `/reminders` lists what is queued.
 
@@ -350,7 +350,7 @@ Greetings ignore `proactive.quiet_hours` on purpose. The window already is your 
 - `he is idle, his status says "📚 studying"`
 - `he is online and listening to Little Dark Age by MGMT`
 
-Only `persona.owner_id` gets this. It reaches her prompt as context, with instructions to use it the way a girlfriend would ("youre still on that?", "go to sleep"), and never to announce that she was watching. Presence only exists in a shared server, so DMs alone will not show it.
+Only `persona.owner_id` gets this. It reaches her prompt as context, with instructions to use it the way a chatbot would ("youre still on that?", "go to sleep"), and never to announce that she was watching. Presence only exists in a shared server, so DMs alone will not show it.
 
 ## Small human details
 
@@ -425,9 +425,9 @@ You can set the same values by hand in `config.yaml` and put `OPENROUTER_API_KEY
 
 ## Persona
 
-`nora/prompts/girlfriend.txt` is the whole character. Delivery rules (bubble size, lowercase, no full stops, no emoji, no markdown) are enforced separately in code, so you can adjust the voice without rewriting the plumbing.
+`nora/prompts/chatbot.txt` is the whole character. Delivery rules (bubble size, lowercase, no full stops, no emoji, no markdown) are enforced separately in code, so you can adjust the voice without rewriting the plumbing.
 
-The default is a warm, easy-to-talk-to girlfriend: playful, interested in your hobbies, honest about how she feels, and not mean. Edit the prompt and restart her to change it.
+The default is a warm, easy-to-talk-to chatbot: playful, interested in your hobbies, honest about how she feels, and not mean. Edit the prompt and restart her to change it.
 
 ## Voice messages
 
@@ -461,7 +461,7 @@ Fill them in, then set `timetable.enabled: true` and/or `calendar.enabled: true`
 | path | what it is |
 | --- | --- |
 | `nora/brain.py` | prompt assembly, per-person stores, compose/record split |
-| `nora/prompts/girlfriend.txt` | the character prompt |
+| `nora/prompts/chatbot.txt` | the character prompt |
 | `nora/humanize.py` | sanitizing, splitting, shorthand, typing delay |
 | `nora/discord_bot.py` | Discord transport, debounce, follow-ups, presence, tray hooks |
 | `nora/memory.py` | SQLite schema, facts, summaries, FTS recall |

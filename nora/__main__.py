@@ -17,7 +17,7 @@ log = logging.getLogger("nora")
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="nora",
-        description="Local girlfriend with long-term memory.",
+        description="Local chatbot with long-term memory.",
     )
     parser.add_argument(
         "command",

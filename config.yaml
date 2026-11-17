@@ -1,4 +1,4 @@
-# Nora - a local, self-hosted girlfriend chatbot
+# Nora - a local, self-hosted chatbot
 # Everything here is read on startup only, restart her after editing.
 
 persona:
@@ -8,7 +8,7 @@ persona:
   # Discord id of the person whose timetable and calendar these are. Only
   # their conversations get the schedule context. Empty = use proactive.user_id.
   owner_id:
-  prompt_file: nora/prompts/girlfriend.txt
+  prompt_file: nora/prompts/chatbot.txt
 
 model:
   # Leave empty to auto-pick the first *.gguf in gguf_dir.

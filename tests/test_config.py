@@ -104,7 +104,7 @@ def test_persona_prompt_exists_and_sets_the_voice():
     prompt = settings.persona_prompt
     assert len(prompt) > 500
     assert "lowercase" in prompt
-    assert "girlfriend" in prompt
+    assert "chatbot" in prompt
     assert "hobbies" in prompt
     # no emoji, no tsundere
     assert "never use emoji" in prompt

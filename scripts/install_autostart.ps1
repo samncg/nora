@@ -46,7 +46,7 @@ Register-ScheduledTask `
     -Action $action `
     -Trigger $triggers `
     -Settings $settings `
-    -Description "Nora: local tomboy girlfriend bot (llama.cpp + discord)" `
+    -Description "Nora: local tomboy chatbot (llama.cpp + discord)" `
     -Force | Out-Null
 
 Write-Host "registered scheduled task '$TaskName'." -ForegroundColor Green
